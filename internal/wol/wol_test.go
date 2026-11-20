@@ -2,6 +2,7 @@ package wol
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"testing"
 )
@@ -93,7 +94,7 @@ func TestBroadcastsIncludeLimitedBroadcast(t *testing.T) {
 }
 
 func TestWakeRejectsInvalidMAC(t *testing.T) {
-	if _, err := Wake(t.Context(), "not-a-mac", Options{}); err == nil {
+	if _, err := Wake(context.Background(), "not-a-mac", Options{}); err == nil {
 		t.Fatal("Wake accepted an invalid MAC")
 	}
 }

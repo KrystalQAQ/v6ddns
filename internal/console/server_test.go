@@ -51,6 +51,7 @@ func (f *fakeBackend) Wake(_ context.Context, mac string) (wol.Result, error) {
 	f.wokeMAC = mac
 	return wol.Result{MAC: mac, Targets: []string{"192.168.0.255:9"}}, nil
 }
+func (f *fakeBackend) Update(context.Context) (daemon.Event, error) { return daemon.Event{}, nil }
 func (f *fakeBackend) InboundCheck(context.Context) (service.InboundResult, error) {
 	return service.InboundResult{Reachable: true, Target: "example.com:443"}, nil
 }
