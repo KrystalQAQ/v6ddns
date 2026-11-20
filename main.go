@@ -38,6 +38,7 @@ import (
 	"github.com/KrystalQAQ/v6ddns/internal/log"
 	"github.com/KrystalQAQ/v6ddns/internal/service"
 	"github.com/KrystalQAQ/v6ddns/internal/tray"
+	"github.com/KrystalQAQ/v6ddns/internal/wol"
 )
 
 // version is overridden at build time with -X main.version=...
@@ -53,12 +54,20 @@ func main() {
 		icmp          = flag.Bool("icmp", false, "also try ICMPv6 probes (needs raw-socket privileges)")
 		inboundWorker = flag.String("inbound-worker", inbound.DefaultWorkerURL, "inbound probe Worker URL")
 		neighbors     = flag.Bool("neigh", false, "list IPv6 neighbours (LAN devices) and exit")
+		wake          = flag.String("wake", "", "broadcast a Wake-on-LAN packet to this MAC and exit")
 	)
 	flag.Parse()
 
 	if *daemonMode && *once {
 		fmt.Fprintln(os.Stderr, "--daemon and --once are mutually exclusive")
 		os.Exit(2)
+	}
+	if *wake != "" {
+		if err := printWake(*wake); err != nil {
+			fmt.Fprintln(os.Stderr, "wake:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if *neighbors {
 		if err := printNeighbors(); err != nil {
@@ -148,6 +157,25 @@ func main() {
 
 // printNeighbors is the --neigh diagnostic: a passive view of the kernel's
 // IPv6 neighbour table. Devices appear only after they have sent IPv6 traffic.
+func printWake(mac string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := wol.Wake(ctx, mac, wol.Options{})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("magic packet for %s sent to:\n", res.MAC)
+	for _, target := range res.Targets {
+		fmt.Printf("  %s\n", target)
+	}
+	for _, problem := range res.Errors {
+		fmt.Printf("  failed: %s\n", problem)
+	}
+	fmt.Println("\nThe network card and firmware must both accept wake-on-LAN, and the")
+	fmt.Println("link must stay powered while the machine sleeps.")
+	return nil
+}
+
 func printNeighbors() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

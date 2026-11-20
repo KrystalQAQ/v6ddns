@@ -21,6 +21,7 @@ import (
 	"github.com/KrystalQAQ/v6ddns/internal/inbound"
 	"github.com/KrystalQAQ/v6ddns/internal/ipv6"
 	"github.com/KrystalQAQ/v6ddns/internal/log"
+	"github.com/KrystalQAQ/v6ddns/internal/wol"
 )
 
 // Options is everything main.go hands to the service.
@@ -197,6 +198,19 @@ func (s *Service) Neighbors(ctx context.Context) ([]ipv6.Neighbor, error) {
 		return nil, errors.New("没有可用的邻居表读取器")
 	}
 	return s.neighbors.Neighbors(ctx)
+}
+
+// Wake sends a Wake-on-LAN magic packet for a LAN device. It is the only action
+// that takes a MAC address instead of an IPv6 address: a sleeping device has no
+// neighbour entry left to look up.
+func (s *Service) Wake(ctx context.Context, mac string) (wol.Result, error) {
+	res, err := wol.Wake(ctx, mac, wol.Options{})
+	if err != nil {
+		s.logger.Error("wake-on-lan failed", "mac", mac, "error", err)
+		return res, err
+	}
+	s.logger.Info("wake-on-lan sent", "mac", res.MAC, "targets", strings.Join(res.Targets, " "))
+	return res, nil
 }
 
 // ErrBusy is returned when another manual cycle is already running.

@@ -362,6 +362,14 @@
       else types.append(badge(KIND_LABELS[kind] || kind, kindClass(kind)));
       if (n.eui64) types.append(badge("EUI-64", ""));
       addCell(tr, "类型", types);
+
+      const wake = document.createElement("button");
+      wake.type = "button";
+      wake.className = "btn wake-btn";
+      wake.title = `唤醒 ${n.mac}`;
+      wake.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-power"/></svg><span>唤醒</span>';
+      wake.addEventListener("click", () => wakeDevice(n.mac, wake));
+      addCell(tr, "操作", wake);
       return tr;
     });
 
@@ -374,6 +382,77 @@
 
     setText("neigh-total", list.length);
     setText("neigh-gua", list.filter((n) => n.gua).length);
+    renderWakeOptions(list);
+  }
+
+  // ------------------------------------------------------------- wake
+
+  const MAC_PATTERN = /^[0-9a-f]{2}([:-]?[0-9a-f]{2}){5}$/i;
+
+  function setWakeResult(text, tone = "") {
+    const node = $("wake-result");
+    if (!node) return;
+    node.textContent = text;
+    if (tone) node.dataset.tone = tone;
+    else delete node.dataset.tone;
+  }
+
+  function renderWakeOptions(list) {
+    const dl = $("wake-macs");
+    if (!dl) return;
+    const seen = new Set();
+    const options = [];
+    for (const n of list) {
+      const mac = String(n.mac || "").toLowerCase();
+      if (!mac || seen.has(mac)) continue;
+      seen.add(mac);
+      const option = document.createElement("option");
+      option.value = mac;
+      const hint = [n.ip, n.interface].filter(Boolean).join(" · ");
+      if (hint) option.label = hint;
+      options.push(option);
+    }
+    dl.replaceChildren(...options);
+  }
+
+  // Waking a machine is the one action that needs a MAC rather than an
+  // address: a sleeping device has no neighbour entry left to look up.
+  async function wakeDevice(mac, btn) {
+    const value = String(mac || "").trim();
+    if (!MAC_PATTERN.test(value)) {
+      setWakeResult("MAC 格式不对，示例：aa:bb:cc:dd:ee:ff", "err");
+      $("wake-mac")?.focus();
+      return;
+    }
+    setBusy(btn, true, "发送中…");
+    setWakeResult(`正在向 ${value} 广播魔包…`);
+    try {
+      const data = await api("/api/wake", { method: "POST", body: { mac: value }, timeout: 15000 });
+      const result = data?.result || {};
+      const targets = Array.isArray(result.targets) ? result.targets : [];
+      const failed = Array.isArray(result.errors) ? result.errors : [];
+      const tone = failed.length ? "warn" : "ok";
+      setWakeResult(
+        `魔包已发往 ${result.mac || value}：${targets.length} 个广播目标` +
+          (failed.length ? `，${failed.length} 个失败` : "") +
+          "。设备一般 5–30 秒内开始开机。",
+        tone,
+      );
+      toast(`唤醒 ${result.mac || value}：已发送`, tone);
+      const input = $("wake-mac");
+      if (input) input.value = "";
+    } catch (err) {
+      const message = err?.message || "唤醒失败";
+      setWakeResult(message, "err");
+      toast(message, "err");
+    } finally {
+      setBusy(btn, false);
+    }
+  }
+
+  function wakeFromInput(btn) {
+    const input = $("wake-mac");
+    wakeDevice(input ? input.value : "", btn);
   }
 
   function renderRecords(records) {
@@ -1111,6 +1190,12 @@
     $("btn-detect-empty")?.addEventListener("click", (e) => runDetect($("btn-detect")));
     $("btn-neighbors-refresh")?.addEventListener("click", () => ensureNeighbors(true));
     $("btn-neighbors-empty")?.addEventListener("click", () => ensureNeighbors(true));
+  $("btn-wake")?.addEventListener("click", (e) => wakeFromInput(e.currentTarget));
+  $("wake-mac")?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    wakeFromInput($("btn-wake"));
+  });
     $("btn-record-refresh")?.addEventListener("click", () => loadRecord());
     $("btn-inbound")?.addEventListener("click", (e) => runInbound(e.currentTarget));
 

@@ -15,6 +15,7 @@ import (
 	"github.com/KrystalQAQ/v6ddns/internal/ipv6"
 	"github.com/KrystalQAQ/v6ddns/internal/log"
 	"github.com/KrystalQAQ/v6ddns/internal/service"
+	"github.com/KrystalQAQ/v6ddns/internal/wol"
 )
 
 type fakeBackend struct {
@@ -24,6 +25,8 @@ type fakeBackend struct {
 	savedCfg       config.Config
 	savedAutostart bool
 	neighs         []ipv6.Neighbor
+	wokeMAC        string
+	wakeErr        error
 }
 
 func (f *fakeBackend) Status() service.Status {
@@ -41,7 +44,13 @@ func (f *fakeBackend) Detect(context.Context) ([]ipv6.Address, error) { return n
 func (f *fakeBackend) Neighbors(context.Context) ([]ipv6.Neighbor, error) {
 	return f.neighs, nil
 }
-func (f *fakeBackend) Update(context.Context) (daemon.Event, error) { return daemon.Event{}, nil }
+func (f *fakeBackend) Wake(_ context.Context, mac string) (wol.Result, error) {
+	if f.wakeErr != nil {
+		return wol.Result{}, f.wakeErr
+	}
+	f.wokeMAC = mac
+	return wol.Result{MAC: mac, Targets: []string{"192.168.0.255:9"}}, nil
+}
 func (f *fakeBackend) InboundCheck(context.Context) (service.InboundResult, error) {
 	return service.InboundResult{Reachable: true, Target: "example.com:443"}, nil
 }
@@ -242,6 +251,40 @@ func TestNeighborsEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(body, "86:92:71:6e:4d:9e") || !strings.Contains(body, `"gua":true`) {
 		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestWakeEndpoint(t *testing.T) {
+	srv, be, base := newTestConsole(t)
+
+	req, err := http.NewRequest(http.MethodPost, base+"/api/wake", strings.NewReader(`{"mac":"AA-BB-CC-DD-EE-FF"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-V6DDNS-Token", srv.Token())
+	res, body := do(t, req)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d %s", res.StatusCode, body)
+	}
+	if be.wokeMAC != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("backend saw mac %q, want normalised aa:bb:cc:dd:ee:ff", be.wokeMAC)
+	}
+	if !strings.Contains(body, "192.168.0.255:9") {
+		t.Errorf("body = %s", body)
+	}
+
+	// A typo must fail before the packet is sent.
+	req, _ = http.NewRequest(http.MethodPost, base+"/api/wake", strings.NewReader(`{"mac":"nope"}`))
+	req.Header.Set("X-V6DDNS-Token", srv.Token())
+	res, body = do(t, req)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad mac: status = %d %s, want 400", res.StatusCode, body)
+	}
+
+	// Waking a device is a POST; a bookmark or prefetch must not trigger it.
+	res, body = do(t, mustRequest(t, http.MethodGet, base+"/api/wake", srv.Token()))
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET: status = %d %s, want 405", res.StatusCode, body)
 	}
 }
 

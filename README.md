@@ -20,7 +20,7 @@ fdfe:dcba:9876::1                    FlClash ULA stable=true reachable=false not
 - **系统托盘**：左键打开控制台；菜单里有「打开控制台 / 立即更新 / 状态 / 地址 / 域名 / 退出」
 - **开机自启动**：配置页勾选开启，自动注册 LaunchAgent（macOS）/ 注册表 Run 项（Windows）/ XDG autostart（Linux），以 `--tray` 模式启动且不打开浏览器
 - **IPv6 检测页**：表格列出所有地址，标注 GUA/ULA/link-local、stable、可达性、探测方式、延迟
-- **局域网设备页**：读内核邻居表，按 MAC 列出局域网设备的 IPv6 地址与状态
+- **局域网设备页**：读内核邻居表，按 MAC 列出局域网设备的 IPv6 地址与状态；看到或填一个 MAC 就能直接发 Wake-on-LAN 魔包
 - **多记录 DDNS 引擎**：主域名之外可再加任意条 `records`，按网卡或 MAC 取地址；每条记录独立更新、独立报错，一条失败不影响其他条
 - **入站检测页**：通过 Cloudflare Worker 从公网主动 TCP 连入本机，验证真正的外网入站可达性
 - **无 UI 模式**：`--daemon` / `--once` 供 cron、systemd、路由器使用，内存约 25MB
@@ -105,6 +105,7 @@ https://dash.cloudflare.com/profile/api-tokens → Create Token → 权限 `Zone
 ./v6ddns --config /path/to/cfg # 指定配置文件
 ./v6ddns --icmp                # 额外尝试 ICMPv6 探测（需 root/管理员，失败自动回退 TCP）
 ./v6ddns --neigh               # 打印内核 IPv6 邻居表（局域网设备）后退出
+./v6ddns --wake aa:bb:cc:dd:ee:ff # 广播 Wake-on-LAN 魔包后退出
 ```
 
 配置保存在：`~/Library/Application Support/v6ddns/config.yaml`（macOS）、`~/.config/v6ddns/config.yaml`（Linux）、`%AppData%\v6ddns\config.yaml`（Windows）。
@@ -160,6 +161,17 @@ v6ddns **不负责给设备分配 IPv6**：局域网设备拿到的地址来自�
 - 跳过 FAILED / INCOMPLETE / UNREACHABLE 和组播地址；同一 MAC 有多个 GUA 时优先 EUI-64 形式
 - 非 EUI-64 的 RFC 7217 stable-privacy 地址同样可用（macOS 默认就是这种）
 - 用 `v6ddns --neigh` 或控制台的「局域网设备」页查看当前邻居表；「DDNS」页的「托管记录」表格显示每条记录最近一轮的结果
+
+### 网络唤醒（Wake-on-LAN）
+
+关机或睡眠的设备根本不在邻居表里，所以唤醒走另一条路：直接对 MAC 广播魔包，不经过 Cloudflare。
+
+- 控制台「局域网设备」页顶部的输入框填 MAC 就能唤醒；表格里每行也有一个「唤醒」按钮，输入框的候选列表来自当前邻居表
+- 命令行：`v6ddns --wake a4:bb:6d:12:34:56`（接受 `aa:bb:cc:dd:ee:ff`、`aa-bb-...`、`aabbccddeeff`）
+- 魔包从**每块有 IPv4 的网卡**分别发出，同时打往该网段的广播地址和 `255.255.255.255`，UDP 端口 9 和 7——只有限定地址的魔包会被部分商用网卡忽略
+- 只给 `--wake` 和「唤醒」按钮开权限：唤醒需要二层广播，IPv6 网络里没有等价物
+
+要唤醒成功，设备侧也得配合：BIOS/UEFI 里的 Wake-on-LAN 打开、网卡属性里允许「只有魔术包」唤醒、睡眠时网卡保持带电（某些主板深睡会断 PCIe 供电）。这里没有“验证设备是否真醒了”的能力，只能确认魔包已经发出，以及几个广播目标。
 
 每条 `records` 条目独立执行：一条找不到设备或 Cloudflare 报错，不影响主域名和其他记录。`require_inbound` 对 `source: mac` 的记录同样生效：附加记录用该条自己的 `domain` 作探针域名，主域名则用 `probe_base`（未设置时用主域名本身）。
 

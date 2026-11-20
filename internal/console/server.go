@@ -29,6 +29,7 @@ import (
 	"github.com/KrystalQAQ/v6ddns/internal/ipv6"
 	"github.com/KrystalQAQ/v6ddns/internal/log"
 	"github.com/KrystalQAQ/v6ddns/internal/service"
+	"github.com/KrystalQAQ/v6ddns/internal/wol"
 )
 
 //go:embed assets
@@ -43,6 +44,7 @@ type Backend interface {
 	SaveConfig(config.Config, bool) error
 	Detect(ctx context.Context) ([]ipv6.Address, error)
 	Neighbors(ctx context.Context) ([]ipv6.Neighbor, error)
+	Wake(ctx context.Context, mac string) (wol.Result, error)
 	Update(ctx context.Context) (daemon.Event, error)
 	InboundCheck(ctx context.Context) (service.InboundResult, error)
 	Record(ctx context.Context) (cloudflare.Record, error)
@@ -191,6 +193,7 @@ func StartWithOptions(svc Backend, addrs []string, opts Options) (*Server, error
 	mux.HandleFunc("/api/config", s.api(s.handleConfig))
 	mux.HandleFunc("/api/detect", s.api(s.handleDetect))
 	mux.HandleFunc("/api/neighbors", s.api(s.handleNeighbors))
+	mux.HandleFunc("/api/wake", s.api(s.handleWake))
 	mux.HandleFunc("/api/update", s.api(s.handleUpdate))
 	mux.HandleFunc("/api/record", s.api(s.handleRecord))
 	mux.HandleFunc("/api/inbound-check", s.api(s.handleInboundCheck))

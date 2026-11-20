@@ -31,6 +31,7 @@
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
   <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.9M6.5 7.8A17 17 0 0 0 2.5 12S6 18 12 18c1.5 0 2.8-.4 4-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
   <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10.5 10.5 0 0 1 13 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/></symbol>
+      <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
   <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
 </svg>
@@ -250,7 +251,27 @@
           <span class="summary-item"><strong id="neigh-gua">0</strong> 台有公网 GUA</span>
         </div>
 
-        <section class="card table-card" aria-labelledby="neigh-caption">
+        <section class="card wake-card" aria-labelledby="wake-title">
+        <div class="wake-head">
+          <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>
+          <div>
+            <h2 id="wake-title">网络唤醒</h2>
+            <p>设备关机或睡眠后邻居表里就没有它了，所以唤醒要直接填 MAC。魔包会从每块有 IPv4 的网卡发往它的子网广播地址和 255.255.255.255。</p>
+          </div>
+        </div>
+        <div class="wake-row">
+          <input type="text" id="wake-mac" class="wake-input" list="wake-macs" autocomplete="off"
+                 spellcheck="false" placeholder="aa:bb:cc:dd:ee:ff" aria-label="要唤醒的设备 MAC 地址"
+                 aria-describedby="wake-result">
+          <datalist id="wake-macs"></datalist>
+          <button type="button" class="btn btn-primary" id="btn-wake">
+            <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg><span>唤醒</span>
+          </button>
+        </div>
+        <p class="hint wake-result" id="wake-result" role="status">需要在 BIOS 和网卡里都开启 Wake-on-LAN，睡眠时网卡还得带电。</p>
+      </section>
+
+      <section class="card table-card" aria-labelledby="neigh-caption">
           <div class="table-wrapper" tabindex="0" role="region" aria-labelledby="neigh-caption">
             <table class="data-table" id="neigh-table">
               <caption id="neigh-caption" class="visually-hidden">局域网 IPv6 邻居</caption>
@@ -261,6 +282,7 @@
                   <th scope="col">网卡</th>
                   <th scope="col">状态</th>
                   <th scope="col">类型</th>
+                  <th scope="col"><span class="visually-hidden">操作</span></th>
                 </tr>
               </thead>
               <tbody id="neigh-body"></tbody>

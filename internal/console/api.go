@@ -12,6 +12,7 @@ import (
 	"github.com/KrystalQAQ/v6ddns/internal/cloudflare"
 	"github.com/KrystalQAQ/v6ddns/internal/config"
 	"github.com/KrystalQAQ/v6ddns/internal/service"
+	"github.com/KrystalQAQ/v6ddns/internal/wol"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 	updateTimeout    = 120 * time.Second
 	recordTimeout    = 20 * time.Second
 	inboundTimeout   = 150 * time.Second
+	wakeTimeout      = 10 * time.Second
 )
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +182,35 @@ func (s *Server) handleDetect(w http.ResponseWriter, r *http.Request) {
 		"addresses": addrs,
 		"status":    s.svc.Status(),
 	})
+}
+
+// handleWake broadcasts a Wake-on-LAN magic packet for the given MAC. Sleeping
+// devices have no neighbour entry, so this is the one action that takes a MAC
+// address instead of an IPv6 address.
+func (s *Server) handleWake(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var payload struct {
+		MAC string `json:"mac"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体必须是 {\"mac\": \"aa:bb:cc:dd:ee:ff\"}")
+		return
+	}
+	mac, err := wol.NormalizeMAC(payload.MAC)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), wakeTimeout)
+	defer cancel()
+	res, err := s.svc.Wake(ctx, mac)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": res})
 }
 
 func (s *Server) handleNeighbors(w http.ResponseWriter, r *http.Request) {

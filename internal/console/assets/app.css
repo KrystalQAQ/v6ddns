@@ -897,6 +897,35 @@ fieldset.card .grid-2 + .field, fieldset.card .field + .grid-2 { margin-block-st
   .save-actions { justify-content: flex-end; }
 }
 
+/* ---------- Wake-on-LAN ---------- */
+
+.wake-card { margin-block-end: 16px; }
+.wake-head { display: flex; gap: 10px; align-items: flex-start; }
+.wake-head .icon { width: 18px; height: 18px; margin-block-start: 1px; color: var(--accent); }
+.wake-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.wake-head p { margin: 3px 0 0; max-width: 62ch; font-size: 12.5px; color: var(--text-3); }
+.wake-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block-start: 12px; }
+.wake-input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: .02em;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.wake-input::placeholder { color: var(--text-3); letter-spacing: 0; }
+.wake-input:hover { border-color: var(--border-strong); }
+.wake-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.wake-btn { padding: 4px 9px; font-size: 12px; }
+.wake-result { margin: 10px 0 0; }
+.wake-result[data-tone="ok"] { color: var(--success); }
+.wake-result[data-tone="warn"] { color: var(--warning); }
+.wake-result[data-tone="err"] { color: var(--danger); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
