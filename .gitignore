@@ -1,0 +1,12 @@
+# 本地编译产物 / 编辑器文件
+v6ddns
+v6ddns.exe
+*.exe
+*.test
+.DS_Store
+.idea/
+.vscode/
+dist/
+
+# Wrangler 本地缓存
+.wrangler/

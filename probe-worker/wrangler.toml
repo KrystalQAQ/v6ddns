@@ -1,0 +1,8 @@
+name = "v6-inbound-probe"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# 绑定到自定义域名。Worker route 优先于 DNS（包括 wildcard CNAME）。
+routes = [
+  { pattern = "v6probe.254253.xyz/*", zone_id = "a842a6a07648a7dfbcd7c457ef55fb53" }
+]
