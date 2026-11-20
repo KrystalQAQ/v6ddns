@@ -16,11 +16,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/KrystalQAQ/v6ddns/internal/autostart"
@@ -43,17 +46,26 @@ var version = ""
 func main() {
 	var (
 		daemonMode    = flag.Bool("daemon", false, "run in the background without a UI")
+		consoleMode   = flag.Bool("console", false, "with --daemon, also serve the web console")
 		once          = flag.Bool("once", false, "detect and update once, then exit")
 		trayMode      = flag.Bool("tray", false, "start in the tray without opening the console")
 		configPath    = flag.String("config", "", "path to the configuration file")
 		icmp          = flag.Bool("icmp", false, "also try ICMPv6 probes (needs raw-socket privileges)")
 		inboundWorker = flag.String("inbound-worker", inbound.DefaultWorkerURL, "inbound probe Worker URL")
+		neighbors     = flag.Bool("neigh", false, "list IPv6 neighbours (LAN devices) and exit")
 	)
 	flag.Parse()
 
 	if *daemonMode && *once {
 		fmt.Fprintln(os.Stderr, "--daemon and --once are mutually exclusive")
 		os.Exit(2)
+	}
+	if *neighbors {
+		if err := printNeighbors(); err != nil {
+			fmt.Fprintln(os.Stderr, "neigh:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	store := newStore(*configPath)
@@ -115,6 +127,13 @@ func main() {
 		}
 	case *daemonMode:
 		logToStdout()
+		if *consoleMode {
+			if err := runDaemonWithConsole(ctx, cfg, store, factory, *inboundWorker); err != nil {
+				fmt.Fprintln(os.Stderr, "v6ddns:", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if srv := startGateListener(cfg); srv != nil {
 			defer srv.Close()
 		}
@@ -125,6 +144,70 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// printNeighbors is the --neigh diagnostic: a passive view of the kernel's
+// IPv6 neighbour table. Devices appear only after they have sent IPv6 traffic.
+func printNeighbors() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	list, err := ipv6.SystemNeighborProvider{}.Neighbors(ctx)
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Println("no IPv6 neighbours")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "MAC\tADDRESS\tIFACE\tSTATE\tTYPE")
+	for _, n := range list {
+		typ := string(n.Kind)
+		if n.GUA {
+			typ = "GUA"
+		}
+		if n.EUI64 {
+			typ += " EUI-64"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", n.MAC, n.IP, n.Interface, n.State, typ)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	fmt.Println("\nPassive view only: a device appears after it sends IPv6 traffic.")
+	return nil
+}
+
+// consoleOptions reads the deployment secrets from the environment. The
+// password never lives in config.yaml, so saving the console form cannot leak
+// it and a config backup does not contain it.
+func consoleOptions(cfg config.Config) console.Options {
+	user := strings.TrimSpace(os.Getenv("V6DDNS_ADMIN_USER"))
+	if user == "" {
+		user = "admin"
+	}
+	return console.Options{
+		Username:     user,
+		Password:     os.Getenv("V6DDNS_ADMIN_PASSWORD"),
+		TLSCert:      os.Getenv("V6DDNS_ADMIN_TLS_CERT"),
+		TLSKey:       os.Getenv("V6DDNS_ADMIN_TLS_KEY"),
+		AllowedHosts: cfg.AdminHostsList(),
+	}
+}
+
+// validateConsoleExposure refuses the dangerous combination of a public bind
+// without authentication. The console can read the Cloudflare token.
+func validateConsoleExposure(cfg config.Config) error {
+	if !cfg.HasWildcardBind() {
+		return nil
+	}
+	if strings.TrimSpace(os.Getenv("V6DDNS_ADMIN_PASSWORD")) == "" {
+		return fmt.Errorf("admin_bind contains a wildcard address; set V6DDNS_ADMIN_PASSWORD")
+	}
+	if len(cfg.AdminHostsList()) == 0 {
+		return fmt.Errorf("admin_bind contains a wildcard address; set admin_hosts to the public hostname")
+	}
+	return nil
 }
 
 // runDesktop starts the service, the loopback console and the tray. It returns
@@ -143,7 +226,15 @@ func runDesktop(
 	if cfg.APIToken != "" {
 		logger.AddSecret(cfg.APIToken)
 	}
+	logger.AddSecret(os.Getenv("V6DDNS_ADMIN_PASSWORD"))
 	log.Default = logger
+
+	if err := validateConsoleExposure(cfg); err != nil {
+		return err
+	}
+	if cfg.HasWildcardBind() && os.Getenv("V6DDNS_ADMIN_TLS_CERT") == "" {
+		logger.Warn("console is publicly bound without TLS; use a TLS reverse proxy/tunnel or V6DDNS_ADMIN_TLS_CERT/KEY")
+	}
 
 	svc, err := service.New(service.Options{
 		Config:    cfg,
@@ -159,11 +250,12 @@ func runDesktop(
 		return err
 	}
 
-	consoleSrv, err := console.Start(svc, fmt.Sprintf("127.0.0.1:%d", cfg.AdminPort))
+	consoleOpts := consoleOptions(cfg)
+	consoleSrv, err := console.StartWithOptions(svc, adminListenAddrs(cfg, cfg.AdminPort), consoleOpts)
 	if err != nil {
 		logger.Warn("console port unavailable; using an ephemeral port",
-			"port", cfg.AdminPort, "error", err)
-		consoleSrv, err = console.Start(svc, "127.0.0.1:0")
+			"binds", cfg.AdminBind, "error", err)
+		consoleSrv, err = console.StartWithOptions(svc, adminListenAddrs(cfg, 0), consoleOpts)
 		if err != nil {
 			return fmt.Errorf("start console: %w", err)
 		}
@@ -191,6 +283,73 @@ func runDesktop(
 		Cancel:      cancel,
 	})
 	return nil
+}
+
+// runDaemonWithConsole is the headless server mode: the same service loop as
+// the desktop build, but without a tray or browser, plus the web console bound
+// to admin_bind/admin_port (loopback unless explicitly configured otherwise).
+func runDaemonWithConsole(
+	ctx context.Context,
+	cfg config.Config,
+	store *config.FileStore,
+	factory daemon.DepsFactory,
+	workerURL string,
+) error {
+	buf := log.NewBuffer(500)
+	logger := log.New(io.MultiWriter(os.Stdout, buf), log.LevelInfo)
+	if cfg.APIToken != "" {
+		logger.AddSecret(cfg.APIToken)
+	}
+	logger.AddSecret(os.Getenv("V6DDNS_ADMIN_PASSWORD"))
+	log.Default = logger
+
+	if err := validateConsoleExposure(cfg); err != nil {
+		return err
+	}
+	if cfg.HasWildcardBind() && os.Getenv("V6DDNS_ADMIN_TLS_CERT") == "" {
+		logger.Warn("console is publicly bound without TLS; use a TLS reverse proxy/tunnel or V6DDNS_ADMIN_TLS_CERT/KEY")
+	}
+
+	svc, err := service.New(service.Options{
+		Config:    cfg,
+		Store:     store,
+		Factory:   factory,
+		WorkerURL: workerURL,
+		// No OS autostart manager here: headless installs are supervised by
+		// systemd/procd, and XDG autostart makes no sense on a server.
+		Buffer:  buf,
+		Logger:  logger,
+		Version: buildVersion(),
+	})
+	if err != nil {
+		return err
+	}
+
+	consoleSrv, err := console.StartWithOptions(svc, adminListenAddrs(cfg, cfg.AdminPort), consoleOptions(cfg))
+	if err != nil {
+		return fmt.Errorf("start console on %s: %w", cfg.AdminBind, err)
+	}
+	defer consoleSrv.Close()
+
+	svc.Start(ctx)
+	defer svc.Close()
+
+	logger.Info("console ready", "url", consoleSrv.URL(), "binds", cfg.AdminBind,
+		"auth", consoleSrv.AuthEnabled(), "tls", consoleSrv.TLSEnabled())
+	fmt.Fprintln(os.Stderr, "控制台:", consoleSrv.URL())
+	<-ctx.Done()
+	return nil
+}
+
+// adminListenAddrs expands the comma-separated admin_bind list into
+// host:port addresses for the console.
+func adminListenAddrs(cfg config.Config, port int) []string {
+	binds := cfg.AdminBinds()
+	addrs := make([]string, 0, len(binds))
+	for _, bind := range binds {
+		addrs = append(addrs, net.JoinHostPort(bind, strconv.Itoa(port)))
+	}
+	return addrs
 }
 
 func buildVersion() string {

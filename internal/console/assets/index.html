@@ -60,6 +60,9 @@
       <a class="nav-item" href="#/addresses" data-nav="addresses">
         <svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>IPv6 地址</span>
       </a>
+      <a class="nav-item" href="#/neighbors" data-nav="neighbors">
+        <svg class="icon" aria-hidden="true"><use href="#i-wifi"/></svg><span>局域网设备</span>
+      </a>
       <a class="nav-item" href="#/ddns" data-nav="ddns">
         <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><span>DDNS</span>
       </a>
@@ -227,6 +230,52 @@
         </section>
       </section>
 
+      <!-- ============ 局域网设备 ============ -->
+      <section class="page" id="page-neighbors" data-page="neighbors" hidden>
+        <header class="page-head">
+          <div>
+            <h1>局域网设备</h1>
+            <p>从内核邻居表读取的 IPv6 设备。设备发过 IPv6 流量后才会出现。</p>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="btn-neighbors-refresh">
+              <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg><span>刷新</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="summary" id="neigh-summary">
+          <span class="summary-item">共 <strong id="neigh-total">0</strong> 台设备</span>
+          <span class="summary-sep" aria-hidden="true">·</span>
+          <span class="summary-item"><strong id="neigh-gua">0</strong> 台有公网 GUA</span>
+        </div>
+
+        <section class="card table-card" aria-labelledby="neigh-caption">
+          <div class="table-wrapper" tabindex="0" role="region" aria-labelledby="neigh-caption">
+            <table class="data-table" id="neigh-table">
+              <caption id="neigh-caption" class="visually-hidden">局域网 IPv6 邻居</caption>
+              <thead>
+                <tr>
+                  <th scope="col">MAC</th>
+                  <th scope="col">地址</th>
+                  <th scope="col">网卡</th>
+                  <th scope="col">状态</th>
+                  <th scope="col">类型</th>
+                </tr>
+              </thead>
+              <tbody id="neigh-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="neigh-empty">
+            <svg class="icon" aria-hidden="true"><use href="#i-wifi"/></svg>
+            <p>还没有读到 IPv6 邻居。</p>
+            <button type="button" class="btn" id="btn-neighbors-empty">刷新</button>
+          </div>
+          <p class="hint">要发布某台设备，在 <code>config.yaml</code> 的 <code>records</code> 里加一条
+            <code>{domain: 名字.example.com, source: mac, mac: 设备MAC}</code>，保存后重启。</p>
+        </section>
+      </section>
+
       <!-- ============ DDNS ============ -->
       <section class="page" id="page-ddns" data-page="ddns" hidden>
         <header class="page-head">
@@ -284,6 +333,29 @@
             <p class="hint">直连必须保持灰云（DNS only），否则 Cloudflare 会隐藏真实地址。</p>
           </section>
         </div>
+
+        <section class="card table-card" id="records-card" aria-labelledby="records-title" hidden>
+          <div class="card-head">
+            <div>
+              <h2 id="records-title">托管记录</h2>
+              <p>最近一轮每个 AAAA 记录的结果</p>
+            </div>
+          </div>
+          <div class="table-wrapper" tabindex="0" role="region" aria-labelledby="records-title">
+            <table class="data-table">
+              <caption class="visually-hidden">托管 AAAA 记录状态</caption>
+              <thead>
+                <tr>
+                  <th scope="col">域名</th>
+                  <th scope="col">来源</th>
+                  <th scope="col">地址</th>
+                  <th scope="col">结果</th>
+                </tr>
+              </thead>
+              <tbody id="records-body"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
       <!-- ============ 入站 ============ -->

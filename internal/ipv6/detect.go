@@ -13,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"sort"
@@ -366,33 +365,26 @@ func IsPublicGUA(ip net.IP) bool {
 }
 
 // IsEUI64 reports whether the interface identifier of ip has the modified
-// EUI-64 form (ff:fe inserted in the middle, U/L bit set), which indicates a
-// stable SLAAC address rather than an RFC 4941 temporary one.
+// EUI-64 form: ff:fe inserted in the middle. The U/L bit is deliberately not
+// checked: a globally administered MAC (U/L=0) becomes U/L=1 after the
+// modified-EUI-64 flip, while a locally administered one becomes U/L=0. Both
+// are ordinary EUI-64 addresses, and requiring U/L=1 would miss most real
+// devices.
 func IsEUI64(ip net.IP) bool {
 	if ip == nil || ip.To4() != nil {
 		return false
 	}
 	v6 := ip.To16()
-	return len(v6) == 16 &&
-		v6[11] == 0xff && v6[12] == 0xfe &&
-		(v6[8]&0x02 != 0) // locally administered bit
+	return len(v6) == 16 && v6[11] == 0xff && v6[12] == 0xfe
 }
 
 // StableFromFlags derives stability from the flags printed by ifconfig / ip /
-// netsh. The presence of "temporary" (or "dynamic" without "mngtmpaddr" on
-// Linux) means an RFC 4941 privacy address. All other cases are stable.
+// netsh. Only an explicit "temporary" flag marks an RFC 4941 privacy address.
+// "dynamic" alone is not evidence of privacy: OpenWrt's netifd installs
+// ordinary SLAAC addresses itself, so they show "dynamic" without "mngtmpaddr".
 // It is a pure function; flags should be lower-cased by the caller if needed.
 func StableFromFlags(flags string) bool {
-	f := strings.ToLower(flags)
-	if strings.Contains(f, "temporary") {
-		return false
-	}
-	// Linux: "dynamic" without "mngtmpaddr" is the privacy address itself;
-	// "mngtmpaddr" is the stable prefix used to generate temporary addresses.
-	if strings.Contains(f, "dynamic") && !strings.Contains(f, "mngtmpaddr") {
-		return false
-	}
-	return true
+	return !strings.Contains(strings.ToLower(flags), "temporary")
 }
 
 // StableForAddress combines flag-based and EUI-64 evidence. A temporary flag
@@ -435,12 +427,7 @@ func enumerate(ctx context.Context) ([]Address, error) {
 }
 
 func run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("ipv6: run %s %v: %w", name, args, err)
-	}
-	return out, nil
+	return runFirst(ctx, name, args...)
 }
 
 var (

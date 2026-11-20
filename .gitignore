@@ -7,6 +7,7 @@ v6ddns.exe
 .idea/
 .vscode/
 dist/
+build/
 
 # Wrangler 本地缓存
 .wrangler/

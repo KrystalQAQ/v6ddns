@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ type fakeBackend struct {
 	adminURL       string
 	savedCfg       config.Config
 	savedAutostart bool
+	neighs         []ipv6.Neighbor
 }
 
 func (f *fakeBackend) Status() service.Status {
@@ -36,7 +38,10 @@ func (f *fakeBackend) SaveConfig(cfg config.Config, autostart bool) error {
 	return nil
 }
 func (f *fakeBackend) Detect(context.Context) ([]ipv6.Address, error) { return nil, nil }
-func (f *fakeBackend) Update(context.Context) (daemon.Event, error)   { return daemon.Event{}, nil }
+func (f *fakeBackend) Neighbors(context.Context) ([]ipv6.Neighbor, error) {
+	return f.neighs, nil
+}
+func (f *fakeBackend) Update(context.Context) (daemon.Event, error) { return daemon.Event{}, nil }
 func (f *fakeBackend) InboundCheck(context.Context) (service.InboundResult, error) {
 	return service.InboundResult{Reachable: true, Target: "example.com:443"}, nil
 }
@@ -133,6 +138,144 @@ func TestHealthNeedsNoToken(t *testing.T) {
 	}
 }
 
+func TestBasicAuthRequiredWhenPasswordSet(t *testing.T) {
+	cfg := config.Default()
+	cfg.Domain = "host.example.com"
+	be := &fakeBackend{cfg: cfg}
+	srv, err := StartWithOptions(be, []string{"127.0.0.1:0"}, Options{
+		Username: "admin",
+		Password: "test-password",
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	base := strings.TrimSuffix(srv.URL(), "/")
+
+	// No credentials: the browser gets a Basic auth challenge, not the page.
+	res, _ := do(t, mustRequest(t, http.MethodGet, base+"/", ""))
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("without auth: status = %d, want 401", res.StatusCode)
+	}
+	if got := res.Header.Get("WWW-Authenticate"); !strings.HasPrefix(got, "Basic ") {
+		t.Errorf("WWW-Authenticate = %q", got)
+	}
+
+	req := mustRequest(t, http.MethodGet, base+"/", "")
+	req.SetBasicAuth("admin", "wrong")
+	res, _ = do(t, req)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong password: status = %d, want 401", res.StatusCode)
+	}
+
+	req = mustRequest(t, http.MethodGet, base+"/", "")
+	req.SetBasicAuth("admin", "test-password")
+	res, body := do(t, req)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, srv.Token()) {
+		t.Fatalf("correct password: status = %d, body has token = %t", res.StatusCode, strings.Contains(body, srv.Token()))
+	}
+
+	// Authentication and the API token are independent gates.
+	req = mustRequest(t, http.MethodGet, base+"/api/status", "")
+	req.SetBasicAuth("admin", "test-password")
+	res, _ = do(t, req)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("auth without token: status = %d, want 401", res.StatusCode)
+	}
+	req = mustRequest(t, http.MethodGet, base+"/api/status", srv.Token())
+	req.SetBasicAuth("admin", "test-password")
+	res, _ = do(t, req)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("auth with token: status = %d", res.StatusCode)
+	}
+}
+
+func TestWildcardBindRequiresPasswordAndHosts(t *testing.T) {
+	cfg := config.Default()
+	be := &fakeBackend{cfg: cfg}
+
+	if _, err := StartWithOptions(be, []string{"0.0.0.0:0"}, Options{}); err == nil ||
+		!strings.Contains(err.Error(), "V6DDNS_ADMIN_PASSWORD") {
+		t.Fatalf("wildcard without password: err = %v", err)
+	}
+	if _, err := StartWithOptions(be, []string{"0.0.0.0:0"}, Options{Password: "test-password"}); err == nil ||
+		!strings.Contains(err.Error(), "admin_hosts") {
+		t.Fatalf("wildcard without hosts: err = %v", err)
+	}
+	srv, err := StartWithOptions(be, []string{"0.0.0.0:0"}, Options{
+		Password:     "test-password",
+		AllowedHosts: []string{"v6.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("wildcard with password and hosts: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+}
+
+func TestHostAllowedIncludesAllowedHosts(t *testing.T) {
+	s := &Server{port: "38081", allowedHosts: []string{"v6.example.com"}}
+	if !s.hostAllowed("v6.example.com:38081") {
+		t.Error("admin host should be accepted")
+	}
+	if s.hostAllowed("evil.example.com:38081") {
+		t.Error("foreign host must not be accepted")
+	}
+}
+
+func TestNeighborsEndpoint(t *testing.T) {
+	cfg := config.Default()
+	be := &fakeBackend{cfg: cfg, neighs: []ipv6.Neighbor{{
+		IP:  net.ParseIP("2408:8262:c7f:6c4f:8492:71ff:fe6e:4d9e"),
+		MAC: "86:92:71:6e:4d:9e", Interface: "br0", State: "STALE",
+		Kind: ipv6.KindGUA, GUA: true, EUI64: true,
+	}}}
+	srv, err := Start(be, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	base := strings.TrimSuffix(srv.URL(), "/")
+
+	res, body := do(t, mustRequest(t, http.MethodGet, base+"/api/neighbors", srv.Token()))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d %s", res.StatusCode, body)
+	}
+	if !strings.Contains(body, "86:92:71:6e:4d:9e") || !strings.Contains(body, `"gua":true`) {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestConfigPutPreservesRecords(t *testing.T) {
+	srv, be, base := newTestConsole(t)
+	be.cfg.Records = []config.AdditionalRecord{{
+		Domain: "mac.example.com", Source: config.SourceMAC, MAC: "c8:7f:54:70:ee:bc",
+	}}
+
+	_, body := do(t, mustRequest(t, http.MethodGet, base+"/api/config", srv.Token()))
+	var got configPayload
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if len(got.Records) != 1 || got.Records[0].Domain != "mac.example.com" {
+		t.Fatalf("records missing from payload: %+v", got.Records)
+	}
+	// Simulate an older/console payload without records: the server must keep
+	// the YAML-defined records instead of wiping them.
+	got.Records = nil
+	payload, _ := json.Marshal(got)
+	req := mustRequest(t, http.MethodPut, base+"/api/config", srv.Token())
+	req.Header.Set("Content-Type", "application/json")
+	req.Body = io.NopCloser(strings.NewReader(string(payload)))
+	req.ContentLength = int64(len(payload))
+	res, body := do(t, req)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("put config: %d %s", res.StatusCode, body)
+	}
+	if len(be.savedCfg.Records) != 1 || be.savedCfg.Records[0].MAC != "c8:7f:54:70:ee:bc" {
+		t.Fatalf("records were not preserved: %+v", be.savedCfg.Records)
+	}
+}
+
 func TestHostGuardRejectsForeignNames(t *testing.T) {
 	_, _, base := newTestConsole(t)
 
@@ -148,6 +291,49 @@ func TestHostGuardRejectsForeignNames(t *testing.T) {
 	res, _ = do(t, req)
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("wrong port: status = %d, want 403", res.StatusCode)
+	}
+}
+
+func TestHostAllowedFollowsBindAddresses(t *testing.T) {
+	s := &Server{port: "38081", bindHosts: []string{"10.13.13.1", "192.168.1.125"}}
+	for _, host := range []string{
+		"127.0.0.1:38081", "localhost:38081",
+		"10.13.13.1:38081", "192.168.1.125:38081",
+	} {
+		if !s.hostAllowed(host) {
+			t.Errorf("hostAllowed(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{
+		"10.13.13.2:38081", "192.168.1.126:38081",
+		"10.13.13.1:38082", "evil.example.com:38081",
+	} {
+		if s.hostAllowed(host) {
+			t.Errorf("hostAllowed(%q) = true, want false", host)
+		}
+	}
+}
+
+func TestConfigPutPreservesAdminBind(t *testing.T) {
+	srv, be, base := newTestConsole(t)
+	be.cfg.AdminBind = "10.13.13.1"
+
+	_, body := do(t, mustRequest(t, http.MethodGet, base+"/api/config", srv.Token()))
+	var got configPayload
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	payload, _ := json.Marshal(got)
+	req := mustRequest(t, http.MethodPut, base+"/api/config", srv.Token())
+	req.Header.Set("Content-Type", "application/json")
+	req.Body = io.NopCloser(strings.NewReader(string(payload)))
+	req.ContentLength = int64(len(payload))
+	res, body := do(t, req)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("put config: %d %s", res.StatusCode, body)
+	}
+	if be.savedCfg.AdminBind != "10.13.13.1" {
+		t.Fatalf("admin_bind was not preserved: %+v", be.savedCfg)
 	}
 }
 

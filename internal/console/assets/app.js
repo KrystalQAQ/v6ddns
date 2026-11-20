@@ -8,10 +8,11 @@
   const TOKEN = document.querySelector('meta[name="v6ddns-token"]')?.content || "";
   const THEME_KEY = "v6ddns-theme";
   const POLL_MS = 4000;
-  const PAGES = ["overview", "addresses", "ddns", "inbound", "settings"];
+  const PAGES = ["overview", "addresses", "neighbors", "ddns", "inbound", "settings"];
   const PAGE_TITLES = {
     overview: "总览",
     addresses: "IPv6 地址",
+    neighbors: "局域网设备",
     ddns: "DDNS",
     inbound: "入站检测",
     settings: "配置",
@@ -30,6 +31,18 @@
     unspecified: "未指定",
     other: "其他",
   };
+  const NEIGH_STATE_LABELS = {
+    REACHABLE: "可达",
+    STALE: "陈旧",
+    DELAY: "延迟",
+    PROBE: "探测中",
+    PERMANENT: "永久",
+    NOARP: "不解析",
+  };
+  const SOURCE_LABELS = {
+    interface: "网卡",
+    mac: "MAC",
+  };
   const MESSAGES = {
     "no usable IPv6 address": "没有可用的 IPv6 地址",
     "IPv6 unchanged, skipped": "地址未变化，已跳过",
@@ -45,6 +58,8 @@
     status: null,
     config: null,
     record: null,
+    neighbors: null,
+    neighborsAt: 0,
     dirty: false,
     logCursor: 0,
     lastLogSeq: 0,
@@ -261,8 +276,26 @@
     }
 
     renderAddresses(st.addresses || []);
+    renderRecords(st.records || []);
     renderInbound(st);
     renderLocal(published);
+  }
+
+  function addCell(tr, label, child) {
+    const td = document.createElement("td");
+    td.dataset.label = label;
+    if (typeof child === "string") td.textContent = child;
+    else if (child) td.append(child);
+    tr.append(td);
+  }
+
+  function codeCell(tr, text) {
+    const th = document.createElement("th");
+    th.scope = "row";
+    const code = document.createElement("code");
+    code.textContent = text || "—";
+    th.append(code);
+    tr.append(th);
   }
 
   function renderAddresses(list) {
@@ -270,25 +303,12 @@
     if (!body) return;
     const rows = list.map((addr) => {
       const tr = document.createElement("tr");
-      const th = document.createElement("th");
-      th.scope = "row";
-      const code = document.createElement("code");
-      code.textContent = addr.ip || "—";
-      th.append(code);
-      tr.append(th);
+      codeCell(tr, addr.ip);
 
-      const cell = (label, child) => {
-        const td = document.createElement("td");
-        td.dataset.label = label;
-        if (typeof child === "string") td.textContent = child;
-        else if (child) td.append(child);
-        tr.append(td);
-      };
-
-      cell("网卡", addr.interface || "—");
+      addCell(tr, "网卡", addr.interface || "—");
       const kind = String(addr.kind || "other");
-      cell("类型", badge(KIND_LABELS[kind] || kind, kindClass(kind)));
-      cell("稳定", badge(addr.stable ? "长期" : "临时", addr.stable ? "" : "warn"));
+      addCell(tr, "类型", badge(KIND_LABELS[kind] || kind, kindClass(kind)));
+      addCell(tr, "稳定", badge(addr.stable ? "长期" : "临时", addr.stable ? "" : "warn"));
 
       let reach;
       if (addr.reachable) {
@@ -301,12 +321,12 @@
       } else {
         reach = badge("未探测", "");
       }
-      cell("可达", reach);
+      addCell(tr, "可达", reach);
       const latency = latencyText(addr.latency_ms);
       const latencyNode = document.createElement("span");
       latencyNode.textContent = latency;
       if (addr.method) latencyNode.title = addr.error ? `${addr.method} · ${addr.error}` : addr.method;
-      cell("延迟", latencyNode);
+      addCell(tr, "延迟", latencyNode);
       return tr;
     });
 
@@ -320,6 +340,72 @@
     setText("sum-total", list.length);
     setText("sum-gua", list.filter((a) => a.kind === "GUA").length);
     setText("sum-reach", list.filter((a) => a.reachable).length);
+  }
+
+  function renderNeighbors(list) {
+    const body = $("neigh-body");
+    if (!body) return;
+    const rows = list.map((n) => {
+      const tr = document.createElement("tr");
+      codeCell(tr, n.mac);
+      addCell(tr, "地址", n.ip || "—");
+      addCell(tr, "网卡", n.interface || "—");
+
+      const state = String(n.state || "").toUpperCase();
+      const tone = state === "REACHABLE" ? "ok" : ["STALE", "DELAY", "PROBE"].includes(state) ? "warn" : "";
+      addCell(tr, "状态", badge(NEIGH_STATE_LABELS[state] || state || "—", tone));
+
+      const kind = String(n.kind || "other");
+      const types = document.createElement("span");
+      types.className = "badge-group";
+      if (n.gua) types.append(badge("公网 GUA", "gua"));
+      else types.append(badge(KIND_LABELS[kind] || kind, kindClass(kind)));
+      if (n.eui64) types.append(badge("EUI-64", ""));
+      addCell(tr, "类型", types);
+      return tr;
+    });
+
+    body.replaceChildren(...rows);
+    const hasRows = list.length > 0;
+    const wrapper = body.closest(".table-wrapper");
+    if (wrapper) wrapper.hidden = !hasRows;
+    const empty = $("neigh-empty");
+    if (empty) empty.hidden = hasRows;
+
+    setText("neigh-total", list.length);
+    setText("neigh-gua", list.filter((n) => n.gua).length);
+  }
+
+  function renderRecords(records) {
+    const card = $("records-card");
+    const body = $("records-body");
+    if (!card || !body) return;
+    const list = Array.isArray(records) ? records : [];
+    card.hidden = list.length === 0;
+    const rows = list.map((r) => {
+      const tr = document.createElement("tr");
+      codeCell(tr, r.domain);
+      addCell(tr, "来源", SOURCE_LABELS[r.source] || r.source || "—");
+      addCell(tr, "地址", r.new_ip || r.old_ip || "—");
+
+      let state;
+      if (r.error) {
+        state = badge("失败", "err");
+        state.title = r.error;
+      } else if (r.updated) {
+        state = badge("已更新", "ok");
+      } else {
+        state = badge("未变化", "");
+      }
+      addCell(tr, "状态", state);
+      const note = r.error || explainMessage(r.message) || "—";
+      const noteNode = document.createElement("span");
+      noteNode.textContent = note;
+      if (r.error) noteNode.title = r.error;
+      addCell(tr, "说明", noteNode);
+      return tr;
+    });
+    body.replaceChildren(...rows);
   }
 
   function kindClass(kind) {
@@ -604,6 +690,35 @@
       return;
     }
     await loadRecord({ quiet: !force });
+  }
+
+  async function loadNeighbors({ quiet = false } = {}) {
+    const btn = $("btn-neighbors-refresh");
+    setBusy(btn, true, "读取中…");
+    setBusy($("btn-neighbors-empty"), true, "读取中…");
+    try {
+      const data = await api("/api/neighbors", { timeout: 20000 });
+      state.neighbors = Array.isArray(data?.neighbors) ? data.neighbors : [];
+      state.neighborsAt = Date.now();
+      renderNeighbors(state.neighbors);
+      if (!quiet) toast(`读到 ${state.neighbors.length} 台 IPv6 设备`, "ok");
+    } catch (err) {
+      state.neighborsAt = 0;
+      renderNeighbors(state.neighbors || []);
+      if (!quiet) toast(err.message, "err");
+    } finally {
+      setBusy(btn, false);
+      setBusy($("btn-neighbors-empty"), false);
+    }
+  }
+
+  async function ensureNeighbors(force = false) {
+    const fresh = state.neighbors && Date.now() - state.neighborsAt < 15000;
+    if (!force && fresh) {
+      renderNeighbors(state.neighbors);
+      return;
+    }
+    await loadNeighbors({ quiet: !force });
   }
 
   async function loadConfig() {
@@ -961,6 +1076,7 @@
     document.title = `${PAGE_TITLES[page]} · v6ddns`;
     if (changed) window.scrollTo(0, 0);
 
+    if (page === "neighbors") ensureNeighbors();
     if (page === "ddns") ensureRecord();
     if (page === "settings") ensureConfig();
     if (page === "overview" && state.status) pollLogs();
@@ -993,6 +1109,8 @@
     $("btn-ddns-update")?.addEventListener("click", (e) => runUpdate(e.currentTarget));
     $("btn-detect")?.addEventListener("click", (e) => runDetect(e.currentTarget));
     $("btn-detect-empty")?.addEventListener("click", (e) => runDetect($("btn-detect")));
+    $("btn-neighbors-refresh")?.addEventListener("click", () => ensureNeighbors(true));
+    $("btn-neighbors-empty")?.addEventListener("click", () => ensureNeighbors(true));
     $("btn-record-refresh")?.addEventListener("click", () => loadRecord());
     $("btn-inbound")?.addEventListener("click", (e) => runInbound(e.currentTarget));
 

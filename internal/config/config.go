@@ -37,6 +37,45 @@ const (
 	PolicyAnyReachable TargetPolicy = "any-reachable"
 )
 
+// RecordSource selects where an additional record's address comes from.
+type RecordSource string
+
+const (
+	// SourceInterface reads an address from a local interface (the default).
+	SourceInterface RecordSource = "interface"
+	// SourceMAC reads a LAN device's GUA from the kernel neighbour table by MAC.
+	SourceMAC RecordSource = "mac"
+)
+
+// AdditionalRecord is a DNS record beyond the primary one. Fields left empty
+// inherit from the top-level configuration. This lets one daemon manage the
+// router's own WAN address and several LAN devices at once.
+type AdditionalRecord struct {
+	Domain    string       `yaml:"domain"`
+	Source    RecordSource `yaml:"source,omitempty"` // interface (default) or mac
+	Interface string       `yaml:"interface,omitempty"`
+	MAC       string       `yaml:"mac,omitempty"`
+	Policy    TargetPolicy `yaml:"policy,omitempty"`
+	Address   string       `yaml:"address,omitempty"`
+	TTL       int          `yaml:"ttl,omitempty"`     // 0 inherits the top-level TTL.
+	Proxied   *bool        `yaml:"proxied,omitempty"` // nil inherits the top-level value.
+}
+
+// RecordSpec is one fully-resolved record the engine should maintain. The
+// primary record is built from the top-level fields; additional records are
+// built from Config.Records with inherited defaults applied.
+type RecordSpec struct {
+	Domain    string
+	Source    RecordSource
+	Interface string
+	MAC       string
+	Policy    TargetPolicy
+	Address   string
+	TTL       int
+	Proxied   bool
+	Primary   bool
+}
+
 // ProbeTargets are the public IPv6 endpoints used by the source-bound TCP
 // reachability probe. Ali DNS is the primary target (verified reachable from
 // en0's GUA on the reference machine); Cloudflare DNS is a fallback.
@@ -52,6 +91,11 @@ type Config struct {
 	APIToken string `yaml:"api_token"`
 	ZoneID   string `yaml:"zone_id"`
 	Domain   string `yaml:"domain"`
+
+	// Records are additional AAAA records maintained by the same daemon. The
+	// top-level Domain remains the primary record; this list lets one process
+	// publish the router's WAN address and several LAN devices by MAC.
+	Records []AdditionalRecord `yaml:"records,omitempty"`
 
 	TTL     int  `yaml:"ttl"`     // 1 means "automatic" in the Cloudflare API.
 	Proxied bool `yaml:"proxied"` // false = DNS only (grey cloud), required for direct IPv6.
@@ -73,9 +117,21 @@ type Config struct {
 	// it; the Cloudflare Worker connects to the configured domain on this port.
 	ListenPort int `yaml:"listen_port"`
 
-	// AdminPort is the loopback-only port of the local web console
-	// (default 38081). It is never exposed on the public interface.
+	// AdminPort is the port of the local web console (default 38081).
 	AdminPort int `yaml:"admin_port,omitempty"`
+
+	// AdminBind is where the web console listens (default 127.0.0.1). A
+	// comma-separated list of concrete addresses is accepted, e.g.
+	// "10.13.13.1,192.168.1.125" to serve both a WireGuard peer network and the
+	// LAN. Unspecified addresses (0.0.0.0, ::) are refused: the console can
+	// read and edit the Cloudflare token, so every exposure must be explicit.
+	AdminBind string `yaml:"admin_bind,omitempty"`
+
+	// AdminHosts is the comma-separated hostname allowlist for the console's
+	// Host header when admin_bind contains a wildcard (0.0.0.0 or ::). It is
+	// required for public binds: accepting every Host would defeat the
+	// DNS-rebinding guard. Example: "v6.example.com".
+	AdminHosts string `yaml:"admin_hosts,omitempty"`
 
 	// InboundWorker is the Cloudflare Worker endpoint used for inbound checks.
 	// Empty means "use the value from the --inbound-worker flag / default".
@@ -109,7 +165,165 @@ func Default() Config {
 		ProbeTimeout: "5s",
 		ListenPort:   38080,
 		AdminPort:    38081,
+		AdminBind:    "127.0.0.1",
 	}
+}
+
+// AdminBinds returns the concrete console bind addresses. An empty value means
+// the loopback default; commas separate multiple addresses.
+func (c Config) AdminBinds() []string {
+	raw := strings.TrimSpace(c.AdminBind)
+	if raw == "" {
+		raw = Default().AdminBind
+	}
+	var out []string
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		addr := strings.TrimSpace(part)
+		if addr == "" {
+			continue
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	if len(out) == 0 {
+		return []string{Default().AdminBind}
+	}
+	return out
+}
+
+// AdminHostsList returns the normalized, de-duplicated Host allowlist. The
+// list is only consulted when the console is bound to a concrete address or a
+// wildcard; it never widens the loopback allowance.
+func (c Config) AdminHostsList() []string {
+	raw := strings.TrimSpace(c.AdminHosts)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		host := strings.TrimSpace(strings.ToLower(part))
+		host = strings.TrimSuffix(host, ".")
+		host = strings.Trim(host, "[]")
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	return out
+}
+
+// HasWildcardBind reports whether admin_bind contains 0.0.0.0 or ::. Public
+// binds are only accepted together with a non-empty admin_hosts and a console
+// password from the environment.
+func (c Config) HasWildcardBind() bool {
+	for _, bind := range c.AdminBinds() {
+		if ip := net.ParseIP(bind); ip != nil && ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordSpecs resolves the primary record plus every additional record into
+// the concrete list the DDNS engine iterates. Defaults are inherited from the
+// top-level fields; the primary record is always first.
+func (c Config) RecordSpecs() []RecordSpec {
+	primary := RecordSpec{
+		Domain:    normalizeHost(c.Domain),
+		Source:    SourceInterface,
+		Interface: strings.TrimSpace(c.InterfaceName),
+		Policy:    c.Policy,
+		Address:   strings.TrimSpace(c.Address),
+		TTL:       c.TTL,
+		Proxied:   c.Proxied,
+		Primary:   true,
+	}
+	out := make([]RecordSpec, 0, 1+len(c.Records))
+	out = append(out, primary)
+	for _, r := range c.Records {
+		spec := RecordSpec{
+			Domain:    normalizeHost(r.Domain),
+			Source:    RecordSource(strings.ToLower(strings.TrimSpace(string(r.Source)))),
+			Interface: strings.TrimSpace(r.Interface),
+			MAC:       strings.TrimSpace(r.MAC),
+			Policy:    TargetPolicy(strings.ToLower(strings.TrimSpace(string(r.Policy)))),
+			Address:   strings.TrimSpace(r.Address),
+			TTL:       r.TTL,
+		}
+		if spec.Source == "" {
+			spec.Source = SourceInterface
+		}
+		if spec.Interface == "" {
+			spec.Interface = primary.Interface
+		}
+		if spec.Policy == "" {
+			spec.Policy = primary.Policy
+		}
+		if spec.TTL == 0 {
+			spec.TTL = primary.TTL
+		}
+		if r.Proxied != nil {
+			spec.Proxied = *r.Proxied
+		} else {
+			spec.Proxied = primary.Proxied
+		}
+		if hw, err := NormalizeMAC(spec.MAC); err == nil {
+			spec.MAC = hw
+		}
+		out = append(out, spec)
+	}
+	return out
+}
+
+// ProbeBaseFor returns the base name used for the inbound gate's per-address
+// probe record. The primary record honours the explicit probe_base setting;
+// additional records use their own domain so the probe name always belongs to
+// the record being changed.
+func (c Config) ProbeBaseFor(spec RecordSpec) string {
+	if spec.Primary {
+		return c.EffectiveProbeBase()
+	}
+	return normalizeHost(spec.Domain)
+}
+
+// NormalizeMAC parses an EUI-48 MAC and returns it in lower-case colon form.
+// Multicast and all-zero addresses are rejected because they can never name a
+// neighbour-table entry.
+func NormalizeMAC(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("mac is empty")
+	}
+	hw, err := net.ParseMAC(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid MAC %q: %w", raw, err)
+	}
+	if len(hw) != 6 {
+		return "", fmt.Errorf("invalid MAC %q: expected 6 bytes, got %d", raw, len(hw))
+	}
+	if hw[0]&0x01 != 0 {
+		return "", fmt.Errorf("invalid MAC %q: multicast bit is set", raw)
+	}
+	allZero := true
+	for _, b := range hw {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return "", fmt.Errorf("invalid MAC %q: all-zero address", raw)
+	}
+	return strings.ToLower(hw.String()), nil
 }
 
 // Loader reads configuration. It is the read half of the persistence contract
@@ -239,12 +453,29 @@ func parse(data []byte) (Config, error) {
 	if cfg.AdminPort == 0 {
 		cfg.AdminPort = Default().AdminPort
 	}
+	if strings.TrimSpace(cfg.AdminBind) == "" {
+		cfg.AdminBind = Default().AdminBind
+	}
+	cfg.AdminBind = strings.TrimSpace(cfg.AdminBind)
+	cfg.AdminHosts = strings.TrimSpace(cfg.AdminHosts)
 	cfg.Policy = TargetPolicy(strings.ToLower(strings.TrimSpace(string(cfg.Policy))))
 	if cfg.InterfaceName != "" {
 		cfg.InterfaceName = strings.TrimSpace(cfg.InterfaceName)
 	}
 	if cfg.Address != "" {
 		cfg.Address = strings.TrimSpace(cfg.Address)
+	}
+	for i := range cfg.Records {
+		r := &cfg.Records[i]
+		r.Domain = normalizeHost(r.Domain)
+		r.Source = RecordSource(strings.ToLower(strings.TrimSpace(string(r.Source))))
+		r.Interface = strings.TrimSpace(r.Interface)
+		r.MAC = strings.TrimSpace(r.MAC)
+		r.Policy = TargetPolicy(strings.ToLower(strings.TrimSpace(string(r.Policy))))
+		r.Address = strings.TrimSpace(r.Address)
+		if hw, err := NormalizeMAC(r.MAC); err == nil {
+			r.MAC = hw
+		}
 	}
 	return cfg, nil
 }
@@ -278,6 +509,27 @@ func (c Config) Validate() error {
 	if c.AdminPort == c.ListenPort {
 		return fmt.Errorf("config: admin_port must differ from listen_port (%d)", c.ListenPort)
 	}
+	for _, bind := range c.AdminBinds() {
+		ip := net.ParseIP(bind)
+		if ip == nil {
+			return fmt.Errorf("config: admin_bind must be an IP address, got %q", bind)
+		}
+		if ip.IsMulticast() {
+			return fmt.Errorf("config: admin_bind must not be multicast, got %q", bind)
+		}
+	}
+	hosts := c.AdminHostsList()
+	for _, host := range hosts {
+		if host == "*" || host == "" {
+			return fmt.Errorf("config: admin_hosts must list concrete hostnames, got %q", host)
+		}
+		if net.ParseIP(host) == nil && !isHostname(host) {
+			return fmt.Errorf("config: admin_hosts contains an invalid hostname %q", host)
+		}
+	}
+	if c.HasWildcardBind() && len(hosts) == 0 {
+		return fmt.Errorf("config: admin_bind with a wildcard address requires admin_hosts (e.g. v6.example.com)")
+	}
 	if c.InboundPort < 0 || c.InboundPort > 65535 {
 		return fmt.Errorf("config: inbound_port must be 0 (use listen_port) or 1-65535, got %d", c.InboundPort)
 	}
@@ -297,14 +549,6 @@ func (c Config) Validate() error {
 			return fmt.Errorf("config: probe_base %q must be %q or a subdomain of it", base, domain)
 		}
 	}
-	switch c.Policy {
-	case PolicyManual, PolicyStableAuto, PolicyAnyReachable:
-	default:
-		return fmt.Errorf("config: unknown target policy %q", c.Policy)
-	}
-	if c.TTL < 0 {
-		return fmt.Errorf("config: TTL must be >= 0, got %d", c.TTL)
-	}
 	if _, err := time.ParseDuration(c.Interval); err != nil {
 		return fmt.Errorf("config: invalid interval %q: %w", c.Interval, err)
 	}
@@ -313,10 +557,48 @@ func (c Config) Validate() error {
 			return fmt.Errorf("config: invalid probe timeout %q: %w", c.ProbeTimeout, err)
 		}
 	}
-	if c.Policy == PolicyManual {
-		ip := net.ParseIP(c.Address)
-		if ip == nil || ip.To4() != nil {
-			return fmt.Errorf("config: manual policy requires a valid IPv6 address, got %q", c.Address)
+
+	seenDomains := make(map[string]struct{})
+	for _, spec := range c.RecordSpecs() {
+		domain := normalizeHost(spec.Domain)
+		if !isHostname(domain) {
+			return fmt.Errorf("config: record domain %q is not a valid hostname", spec.Domain)
+		}
+		if _, ok := seenDomains[domain]; ok {
+			return fmt.Errorf("config: duplicate record domain %q", domain)
+		}
+		seenDomains[domain] = struct{}{}
+
+		switch spec.Source {
+		case SourceInterface, SourceMAC:
+		default:
+			return fmt.Errorf("config: record %q has unknown source %q", domain, spec.Source)
+		}
+		if spec.Source == SourceMAC {
+			if _, err := NormalizeMAC(spec.MAC); err != nil {
+				return fmt.Errorf("config: record %q: %w", domain, err)
+			}
+			if spec.Policy == PolicyManual {
+				return fmt.Errorf("config: record %q: source=mac cannot use manual policy", domain)
+			}
+		}
+
+		switch spec.Policy {
+		case PolicyManual, PolicyStableAuto, PolicyAnyReachable:
+		default:
+			return fmt.Errorf("config: record %q has unknown target policy %q", domain, spec.Policy)
+		}
+		if spec.TTL < 0 {
+			return fmt.Errorf("config: record %q: TTL must be >= 0, got %d", domain, spec.TTL)
+		}
+		if spec.Policy == PolicyManual {
+			ip := net.ParseIP(spec.Address)
+			if ip == nil || ip.To4() != nil {
+				return fmt.Errorf("config: record %q: manual policy requires a valid IPv6 address, got %q", domain, spec.Address)
+			}
+		}
+		if c.RequireInbound && spec.Proxied {
+			return fmt.Errorf("config: record %q: require_inbound needs proxied=false so the Worker reaches the host directly", domain)
 		}
 	}
 	for _, target := range c.effectiveProbeTargets() {

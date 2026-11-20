@@ -148,6 +148,56 @@ func TestValidate(t *testing.T) {
 		{"admin port zero", func(c *Config) { c.AdminPort = 0 }, true},
 		{"admin port too high", func(c *Config) { c.AdminPort = 65536 }, true},
 		{"admin port equals listen", func(c *Config) { c.AdminPort = c.ListenPort }, true},
+		{"admin bind wildcard v4", func(c *Config) { c.AdminBind = "0.0.0.0" }, true},
+		{"admin bind wildcard v6", func(c *Config) { c.AdminBind = "::" }, true},
+		{"admin bind wildcard with hosts", func(c *Config) {
+			c.AdminBind = "0.0.0.0"
+			c.AdminHosts = "v6.example.com"
+		}, false},
+		{"admin hosts invalid", func(c *Config) { c.AdminHosts = "not a host" }, true},
+		{"admin bind not an ip", func(c *Config) { c.AdminBind = "example.com" }, true},
+		{"admin bind wireguard", func(c *Config) { c.AdminBind = "10.13.13.1" }, false},
+		{"admin bind list", func(c *Config) { c.AdminBind = "10.13.13.1,192.168.1.125" }, false},
+		{"admin bind list with wildcard", func(c *Config) { c.AdminBind = "10.13.13.1,0.0.0.0" }, true},
+		{"admin bind list with wildcard and hosts", func(c *Config) {
+			c.AdminBind = "10.13.13.1,0.0.0.0"
+			c.AdminHosts = "v6.example.com"
+		}, false},
+		{"record mac ok", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "mac.example.com", Source: SourceMAC, MAC: "c8:7f:54:70:ee:bc"}}
+		}, false},
+		{"record mac missing mac", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "mac.example.com", Source: SourceMAC}}
+		}, true},
+		{"record mac invalid mac", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "mac.example.com", Source: SourceMAC, MAC: "nope"}}
+		}, true},
+		{"record mac multicast", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "mac.example.com", Source: SourceMAC, MAC: "01:00:5e:00:00:01"}}
+		}, true},
+		{"record duplicate domain", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "home.example.com"}}
+		}, true},
+		{"record unknown source", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "mac.example.com", Source: "magic"}}
+		}, true},
+		{"record manual with mac source", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "mac.example.com", Source: SourceMAC, MAC: "c8:7f:54:70:ee:bc", Policy: PolicyManual, Address: "2408::1"}}
+		}, true},
+		{"record manual with ipv6", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "lan.example.com", Policy: PolicyManual, Address: "2408::1"}}
+		}, false},
+		{"record manual without address", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "lan.example.com", Policy: PolicyManual}}
+		}, true},
+		{"record negative ttl", func(c *Config) {
+			c.Records = []AdditionalRecord{{Domain: "lan.example.com", TTL: -1}}
+		}, true},
+		{"record proxied with inbound gate", func(c *Config) {
+			c.RequireInbound = true
+			proxied := true
+			c.Records = []AdditionalRecord{{Domain: "lan.example.com", Proxied: &proxied}}
+		}, true},
 		{"bad interval", func(c *Config) { c.Interval = "nonsense" }, true},
 		{"bad probe timeout", func(c *Config) { c.ProbeTimeout = "nonsense" }, true},
 		{"unknown policy", func(c *Config) { c.Policy = "magic" }, true},
@@ -183,6 +233,62 @@ func TestValidate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %t", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRecordSpecsInheritAndOverride(t *testing.T) {
+	cfg := validConfig()
+	cfg.InterfaceName = "ppp0"
+	cfg.TTL = 300
+	cfg.Proxied = true
+	no := false
+	cfg.Records = []AdditionalRecord{
+		{Domain: "MAC.Example.com.", Source: "MAC", MAC: "C8-7F-54-70-EE-BC"},
+		{Domain: "lan.example.com", Source: SourceInterface, TTL: 60, Proxied: &no},
+	}
+	specs := cfg.RecordSpecs()
+	if len(specs) != 3 {
+		t.Fatalf("got %d specs, want 3: %+v", len(specs), specs)
+	}
+	primary := specs[0]
+	if !primary.Primary || primary.Domain != "home.example.com" || primary.Source != SourceInterface ||
+		primary.Interface != "ppp0" || primary.TTL != 300 || !primary.Proxied {
+		t.Errorf("primary spec = %+v", primary)
+	}
+	mac := specs[1]
+	if mac.Primary || mac.Domain != "mac.example.com" || mac.Source != SourceMAC ||
+		mac.MAC != "c8:7f:54:70:ee:bc" || mac.TTL != 300 || !mac.Proxied ||
+		mac.Policy != PolicyStableAuto || mac.Interface != "ppp0" {
+		t.Errorf("MAC spec = %+v", mac)
+	}
+	lan := specs[2]
+	if lan.Domain != "lan.example.com" || lan.TTL != 60 || lan.Proxied {
+		t.Errorf("override spec = %+v", lan)
+	}
+}
+
+func TestNormalizeMAC(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"C8-7F-54-70-EE-BC", "c8:7f:54:70:ee:bc", false},
+		{"c8:7f:54:70:ee:bc", "c8:7f:54:70:ee:bc", false},
+		{"", "", true},
+		{"nope", "", true},
+		{"01:00:5e:00:00:01", "", true},
+		{"00:00:00:00:00:00", "", true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeMAC(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("NormalizeMAC(%q) error = %v, wantErr %t", tc.in, err, tc.wantErr)
+			continue
+		}
+		if !tc.wantErr && got != tc.want {
+			t.Errorf("NormalizeMAC(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

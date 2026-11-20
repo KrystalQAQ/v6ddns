@@ -621,6 +621,7 @@ fieldset.card legend + * { clear: both; }
 .badge.ok { border-color: color-mix(in oklab, var(--success) 32%, transparent); background: var(--success-weak); color: var(--success); }
 .badge.warn { border-color: color-mix(in oklab, var(--warning) 32%, transparent); background: var(--warning-weak); color: var(--warning); }
 .badge.err { border-color: color-mix(in oklab, var(--danger) 32%, transparent); background: var(--danger-weak); color: var(--danger); }
+.badge-group { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 
 .empty {
   display: flex;

@@ -33,20 +33,24 @@ type Options struct {
 	Buffer    *log.Buffer
 	Logger    *log.Logger
 	Version   string
+	// Neighbors is the neighbour-table reader used by the discovery page.
+	// Nil selects the OS-backed provider.
+	Neighbors ipv6.NeighborProvider
 }
 
 // Service is safe for concurrent use by the tray, the HTTP server and the
 // daemon loop.
 type Service struct {
-	mu      sync.RWMutex
-	cfg     config.Config
-	store   daemon.ConfigStore
-	factory daemon.DepsFactory
-	worker  string
-	autoMgr autostart.Manager
-	buf     *log.Buffer
-	logger  *log.Logger
-	version string
+	mu        sync.RWMutex
+	cfg       config.Config
+	store     daemon.ConfigStore
+	factory   daemon.DepsFactory
+	worker    string
+	autoMgr   autostart.Manager
+	buf       *log.Buffer
+	logger    *log.Logger
+	version   string
+	neighbors ipv6.NeighborProvider
 
 	interval    time.Duration
 	lastEvent   daemon.Event
@@ -71,16 +75,21 @@ func New(opts Options) (*Service, error) {
 	if opts.Logger == nil {
 		opts.Logger = log.Default
 	}
+	neighbors := opts.Neighbors
+	if neighbors == nil {
+		neighbors = ipv6.SystemNeighborProvider{}
+	}
 	return &Service{
-		cfg:      opts.Config,
-		store:    opts.Store,
-		factory:  opts.Factory,
-		worker:   opts.WorkerURL,
-		autoMgr:  opts.AutoMgr,
-		buf:      opts.Buffer,
-		logger:   opts.Logger,
-		version:  opts.Version,
-		interval: interval,
+		cfg:       opts.Config,
+		store:     opts.Store,
+		factory:   opts.Factory,
+		worker:    opts.WorkerURL,
+		autoMgr:   opts.AutoMgr,
+		buf:       opts.Buffer,
+		logger:    opts.Logger,
+		version:   opts.Version,
+		neighbors: neighbors,
+		interval:  interval,
 	}, nil
 }
 
@@ -179,6 +188,15 @@ func (s *Service) Detect(ctx context.Context) ([]ipv6.Address, error) {
 	s.addrs = addrs
 	s.mu.Unlock()
 	return addrs, nil
+}
+
+// Neighbors returns the kernel's IPv6 neighbour table. It is passive: a device
+// that has not used IPv6 recently may be absent until it sends traffic.
+func (s *Service) Neighbors(ctx context.Context) ([]ipv6.Neighbor, error) {
+	if s.neighbors == nil {
+		return nil, errors.New("没有可用的邻居表读取器")
+	}
+	return s.neighbors.Neighbors(ctx)
 }
 
 // ErrBusy is returned when another manual cycle is already running.
@@ -367,6 +385,17 @@ type EventStatus struct {
 	Addresses int    `json:"address_count"`
 }
 
+// RecordStatus is the console-facing view of one configured AAAA record.
+type RecordStatus struct {
+	Domain  string `json:"domain"`
+	Source  string `json:"source"`
+	Updated bool   `json:"updated"`
+	OldIP   string `json:"old_ip"`
+	NewIP   string `json:"new_ip"`
+	Message string `json:"message"`
+	Error   string `json:"error,omitempty"`
+}
+
 // AddressStatus is the console-facing view of one local IPv6 address.
 type AddressStatus struct {
 	IP        string  `json:"ip"`
@@ -409,6 +438,7 @@ type Status struct {
 	PublishedIP string          `json:"published_ip"`
 	Autostart   bool            `json:"autostart"`
 	LastEvent   EventStatus     `json:"last_event"`
+	Records     []RecordStatus  `json:"records"`
 	Addresses   []AddressStatus `json:"addresses"`
 	Listener    ListenerStatus  `json:"listener"`
 	LastInbound *InboundStatus  `json:"last_inbound,omitempty"`
@@ -425,6 +455,19 @@ func (s *Service) Status() Status {
 	adminURL := s.adminURL
 	s.mu.RUnlock()
 
+	records := make([]RecordStatus, 0, len(ev.Result.Records))
+	for _, r := range ev.Result.Records {
+		records = append(records, RecordStatus{
+			Domain:  r.Domain,
+			Source:  r.Source,
+			Updated: r.Updated,
+			OldIP:   r.OldIP,
+			NewIP:   r.NewIP,
+			Message: r.Message,
+			Error:   r.Error,
+		})
+	}
+
 	st := Status{
 		Version:     s.version,
 		ConfigPath:  s.store.Path(),
@@ -435,6 +478,7 @@ func (s *Service) Status() Status {
 		ListenPort:  cfg.ListenPort,
 		InboundPort: cfg.EffectiveInboundPort(),
 		Autostart:   s.AutostartEnabled(),
+		Records:     records,
 		LastEvent: EventStatus{
 			Updated:   ev.Result.Updated,
 			OldIP:     ev.Result.OldIP,

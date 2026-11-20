@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	detectTimeout  = 100 * time.Second
-	updateTimeout  = 120 * time.Second
-	recordTimeout  = 20 * time.Second
-	inboundTimeout = 150 * time.Second
+	detectTimeout    = 100 * time.Second
+	neighborsTimeout = 15 * time.Second
+	updateTimeout    = 120 * time.Second
+	recordTimeout    = 20 * time.Second
+	inboundTimeout   = 150 * time.Second
 )
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -32,25 +33,27 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // autostart flag. Keeping it explicit prevents the console from writing fields
 // it does not understand.
 type configPayload struct {
-	APIToken       string   `json:"api_token"`
-	ZoneID         string   `json:"zone_id"`
-	Domain         string   `json:"domain"`
-	TTL            int      `json:"ttl"`
-	Proxied        bool     `json:"proxied"`
-	InterfaceName  string   `json:"interface_name"`
-	Interval       string   `json:"interval"`
-	Policy         string   `json:"policy"`
-	Address        string   `json:"address"`
-	ProbeTargets   []string `json:"probe_targets"`
-	ProbeTimeout   string   `json:"probe_timeout"`
-	ListenPort     int      `json:"listen_port"`
-	AdminPort      int      `json:"admin_port"`
-	InboundWorker  string   `json:"inbound_worker"`
-	RequireInbound bool     `json:"require_inbound"`
-	InboundPort    int      `json:"inbound_port"`
-	ProbeBase      string   `json:"probe_base"`
-	Autostart      bool     `json:"autostart"`
-	ConfigPath     string   `json:"config_path,omitempty"`
+	APIToken       string                    `json:"api_token"`
+	ZoneID         string                    `json:"zone_id"`
+	Domain         string                    `json:"domain"`
+	Records        []config.AdditionalRecord `json:"records,omitempty"`
+	TTL            int                       `json:"ttl"`
+	Proxied        bool                      `json:"proxied"`
+	InterfaceName  string                    `json:"interface_name"`
+	Interval       string                    `json:"interval"`
+	Policy         string                    `json:"policy"`
+	Address        string                    `json:"address"`
+	ProbeTargets   []string                  `json:"probe_targets"`
+	ProbeTimeout   string                    `json:"probe_timeout"`
+	ListenPort     int                       `json:"listen_port"`
+	AdminPort      int                       `json:"admin_port"`
+	AdminHosts     string                    `json:"admin_hosts,omitempty"`
+	InboundWorker  string                    `json:"inbound_worker"`
+	RequireInbound bool                      `json:"require_inbound"`
+	InboundPort    int                       `json:"inbound_port"`
+	ProbeBase      string                    `json:"probe_base"`
+	Autostart      bool                      `json:"autostart"`
+	ConfigPath     string                    `json:"config_path,omitempty"`
 }
 
 func payloadFrom(cfg config.Config, autostart bool, path string) configPayload {
@@ -58,6 +61,7 @@ func payloadFrom(cfg config.Config, autostart bool, path string) configPayload {
 		APIToken:       cfg.APIToken,
 		ZoneID:         cfg.ZoneID,
 		Domain:         cfg.Domain,
+		Records:        cfg.Records,
 		TTL:            cfg.TTL,
 		Proxied:        cfg.Proxied,
 		InterfaceName:  cfg.InterfaceName,
@@ -68,6 +72,7 @@ func payloadFrom(cfg config.Config, autostart bool, path string) configPayload {
 		ProbeTimeout:   cfg.ProbeTimeout,
 		ListenPort:     cfg.ListenPort,
 		AdminPort:      cfg.AdminPort,
+		AdminHosts:     cfg.AdminHosts,
 		InboundWorker:  cfg.InboundWorker,
 		RequireInbound: cfg.RequireInbound,
 		InboundPort:    cfg.InboundPort,
@@ -82,6 +87,7 @@ func (p configPayload) toConfig() config.Config {
 	cfg.APIToken = strings.TrimSpace(p.APIToken)
 	cfg.ZoneID = strings.TrimSpace(p.ZoneID)
 	cfg.Domain = strings.TrimSpace(p.Domain)
+	cfg.Records = p.Records
 	cfg.TTL = p.TTL
 	cfg.Proxied = p.Proxied
 	cfg.InterfaceName = strings.TrimSpace(p.InterfaceName)
@@ -92,6 +98,7 @@ func (p configPayload) toConfig() config.Config {
 	cfg.ProbeTimeout = strings.TrimSpace(p.ProbeTimeout)
 	cfg.ListenPort = p.ListenPort
 	cfg.AdminPort = p.AdminPort
+	cfg.AdminHosts = strings.TrimSpace(p.AdminHosts)
 	cfg.InboundWorker = strings.TrimSpace(p.InboundWorker)
 	cfg.RequireInbound = p.RequireInbound
 	cfg.InboundPort = p.InboundPort
@@ -137,6 +144,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg := p.toConfig()
+		// admin_bind, admin_hosts and records are deployment settings, not part
+		// of the editable form. Preserve them so saving the page never silently
+		// moves the console or drops LAN-device records.
+		current := s.svc.Config()
+		cfg.AdminBind = current.AdminBind
+		if strings.TrimSpace(p.AdminHosts) == "" {
+			cfg.AdminHosts = current.AdminHosts
+		}
+		if p.Records == nil {
+			cfg.Records = current.Records
+		}
 		if err := s.svc.SaveConfig(cfg, p.Autostart); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -164,6 +182,20 @@ func (s *Server) handleDetect(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleNeighbors(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), neighborsTimeout)
+	defer cancel()
+	neighbors, err := s.svc.Neighbors(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"neighbors": neighbors})
+}
+
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -187,6 +219,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			"message":   ev.Result.Message,
 			"time":      formatTime(ev.Result.Timestamp),
 			"addresses": len(ev.Addrs),
+			"records":   ev.Result.Records,
 			"error":     evErr,
 		},
 		"status": s.svc.Status(),

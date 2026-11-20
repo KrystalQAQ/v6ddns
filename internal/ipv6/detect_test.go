@@ -57,15 +57,16 @@ func TestIsPublicGUA(t *testing.T) {
 }
 
 func TestIsEUI64(t *testing.T) {
-	// Modified EUI-64: interface ID has ff:fe in the middle and U/L bit set.
-	if !IsEUI64(ip("2408:8262:c7f:6c4f:02a:85cb:1452:5d19")) {
-		// Note: 2a:85... has 0x02 in the first byte -> U/L set, but needs ff:fe at bytes 11-12.
-	}
+	// Modified EUI-64: interface ID has ff:fe at bytes 11-12. The U/L bit is
+	// not part of the test: globally administered MACs end up with U/L=0.
 	if IsEUI64(ip("2408:8262:c7f:6c4f:2a:85cb:1452:5d19")) {
 		t.Error("2a:85:cb:14:52:5d:19 is not EUI-64 (no ff:fe marker)")
 	}
 	if !IsEUI64(ip("2001:db8::20a:95ff:fe12:3456")) {
 		t.Error("20a:95ff:fe12:3456 should be EUI-64")
+	}
+	if !IsEUI64(ip("2408:8262:c7f:6c4f:8492:71ff:fe6e:4d9e")) {
+		t.Error("globally administered MAC (86:92:71:6e:4d:9e) should be EUI-64")
 	}
 	if IsEUI64(ip("2001:db8::1")) {
 		t.Error("::1 is not EUI-64")
@@ -79,7 +80,8 @@ func TestStableFromFlags(t *testing.T) {
 	}{
 		{"autoconf secured", true},
 		{"temporary dynamic", false},
-		{"dynamic", false}, // Linux privacy address
+		{"dynamic", true},               // OpenWrt SLAAC (netifd, no mngtmpaddr)
+		{"dynamic noprefixroute", true}, // OpenWrt `ip -6 addr show`
 		{"dynamic mngtmpaddr", true},
 		{"", true},
 	}

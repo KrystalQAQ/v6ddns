@@ -666,3 +666,131 @@ func TestInboundGateDisabledDoesNotProbe(t *testing.T) {
 		t.Errorf("prober ran while the gate is disabled: %v", p.hosts)
 	}
 }
+
+// ---- multi-record / via_mac ----
+
+type fakeNeighbors struct {
+	neighs []ipv6.Neighbor
+	err    error
+	calls  int
+}
+
+func (f *fakeNeighbors) Neighbors(context.Context) ([]ipv6.Neighbor, error) {
+	f.calls++
+	return f.neighs, f.err
+}
+
+func macNeighbor(ip, mac, state string, eui64 bool) ipv6.Neighbor {
+	return ipv6.Neighbor{
+		IP:        net.ParseIP(ip),
+		MAC:       mac,
+		Interface: "br0",
+		State:     state,
+		Kind:      ipv6.KindGUA,
+		GUA:       true,
+		EUI64:     eui64,
+	}
+}
+
+func TestMultiRecordMaintainsPrimaryAndMAC(t *testing.T) {
+	cfg := stableCfg()
+	cfg.Records = []config.AdditionalRecord{{
+		Domain: "mac.example.com",
+		Source: config.SourceMAC,
+		MAC:    "c8:7f:54:70:ee:bc",
+	}}
+	d := &fakeDetector{addrs: []ipv6.Address{guaAddr(realGUA, true, true)}}
+	cf := newGateCF()
+	cf.records[testDomain] = cloudflare.Record{ID: "main", Name: testDomain, Content: realGUA}
+	cf.records["mac.example.com"] = cloudflare.Record{ID: "mac", Name: "mac.example.com", Content: otherGUA}
+	macGUA := "2408:8262:c7f:6c4f:4fa:4b2:abaa:4148"
+	neigh := &fakeNeighbors{neighs: []ipv6.Neighbor{
+		macNeighbor(macGUA, "c8:7f:54:70:ee:bc", "STALE", false),
+	}}
+
+	eng := NewEngine(cfg, d, cf, quietLogger())
+	eng.SetNeighborProvider(neigh)
+	res, err := eng.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !res.Updated || len(res.Records) != 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	if res.Records[0].Updated || res.Records[0].Message != "IPv6 unchanged, skipped" {
+		t.Errorf("primary record result = %+v", res.Records[0])
+	}
+	if !res.Records[1].Updated || res.Records[1].Source != "mac" {
+		t.Errorf("MAC record result = %+v", res.Records[1])
+	}
+	if got := cf.records["mac.example.com"].Content; got != macGUA {
+		t.Errorf("MAC record content = %q, want %q", got, macGUA)
+	}
+	if res.NewIP != realGUA || res.OldIP != realGUA {
+		t.Errorf("primary result fields = old %q new %q", res.OldIP, res.NewIP)
+	}
+	if neigh.calls != 1 || d.calls != 1 {
+		t.Errorf("provider calls = %d, detector calls = %d", neigh.calls, d.calls)
+	}
+}
+
+func TestMACRecordWithoutNeighborIsNoOp(t *testing.T) {
+	cfg := stableCfg()
+	cfg.Records = []config.AdditionalRecord{{
+		Domain: "mac.example.com",
+		Source: config.SourceMAC,
+		MAC:    "c8:7f:54:70:ee:bc",
+	}}
+	d := &fakeDetector{addrs: []ipv6.Address{guaAddr(realGUA, true, true)}}
+	cf := newGateCF()
+	cf.records[testDomain] = cloudflare.Record{ID: "main", Name: testDomain, Content: realGUA}
+	cf.records["mac.example.com"] = cloudflare.Record{ID: "mac", Name: "mac.example.com", Content: otherGUA}
+	eng := NewEngine(cfg, d, cf, quietLogger())
+	eng.SetNeighborProvider(&fakeNeighbors{})
+
+	res, err := eng.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Updated {
+		t.Errorf("a missing neighbour must not update anything: %+v", res)
+	}
+	if res.Records[1].Message != "no usable IPv6 address" {
+		t.Errorf("MAC record message = %q", res.Records[1].Message)
+	}
+	if got := cf.records["mac.example.com"].Content; got != otherGUA {
+		t.Errorf("MAC record changed to %q", got)
+	}
+}
+
+func TestMultiRecordOneFailureDoesNotBlockOthers(t *testing.T) {
+	cfg := stableCfg()
+	cfg.Records = []config.AdditionalRecord{{
+		Domain: "mac.example.com",
+		Source: config.SourceMAC,
+		MAC:    "c8:7f:54:70:ee:bc",
+	}}
+	d := &fakeDetector{addrs: []ipv6.Address{guaAddr(realGUA, true, true)}}
+	cf := newGateCF()
+	cf.records["mac.example.com"] = cloudflare.Record{ID: "mac", Name: "mac.example.com", Content: otherGUA}
+	cf.getErrFor = map[string]error{testDomain: errors.New("zone unavailable")}
+	macGUA := "2408:8262:c7f:6c4f:4fa:4b2:abaa:4148"
+	eng := NewEngine(cfg, d, cf, quietLogger())
+	eng.SetNeighborProvider(&fakeNeighbors{neighs: []ipv6.Neighbor{
+		macNeighbor(macGUA, "c8:7f:54:70:ee:bc", "REACHABLE", true),
+	}})
+
+	res, err := eng.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), testDomain) {
+		t.Fatalf("err = %v, want the failing primary domain", err)
+	}
+	if res.Records[0].Error == "" {
+		t.Error("primary failure was not recorded")
+	}
+	if !res.Records[1].Updated {
+		t.Errorf("MAC record was not updated after the primary failed: %+v", res.Records[1])
+	}
+	if got := cf.records["mac.example.com"].Content; got != macGUA {
+		t.Errorf("MAC record content = %q, want %q", got, macGUA)
+	}
+}
