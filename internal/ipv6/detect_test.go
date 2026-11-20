@@ -148,18 +148,70 @@ func TestParseIPAddr(t *testing.T) {
 }
 
 func TestParseNetsh(t *testing.T) {
-	sample := `Interface 12: Ethernet
+	// Captured from Windows 11 `netsh interface ipv6 show addresses`. The
+	// address is the last table column, not the first.
+	sample := `Interface 1: Loopback Pseudo-Interface 1
 
-IPv6 Address                              Prefix Length  Valid Lifetime   Preferred Lifetime  State
-----------------------------------------  -------------  ---------------  ------------------  ------------
-2408:8262:c7f:6c4f:2a:85cb:1452:5d19      64             2 days           1 day               Preferred
+Addr Type  DAD State   Valid Life Pref. Life Address
+---------  ----------- ---------- ---------- ------------------------
+Other      Preferred     infinite   infinite ::1
+
+Interface 10: WLAN
+
+Addr Type  DAD State   Valid Life Pref. Life Address
+---------  ----------- ---------- ---------- ------------------------
+Dhcp       Preferred       1h6m9s     1h6m9s 240e:b30:222d:1d00::22e
+Temporary  Preferred     23h57m1s    3h57m1s 240e:b30:222d:1d00:400c:7e8f:31b6:b5ef
+Public     Preferred     23h57m1s    3h57m1s 240e:b30:222d:1d00:51db:578e:a49d:b4eb
+Other      Preferred     infinite   infinite fe80::4b0c:9506:4e93:b067%10
+`
+	addrs := parseNetsh(sample)
+	if len(addrs) != 5 {
+		t.Fatalf("got %d addresses, want 5: %+v", len(addrs), addrs)
+	}
+
+	byIP := map[string]Address{}
+	for _, a := range addrs {
+		byIP[a.IP.String()] = a
+	}
+
+	dhcp := byIP["240e:b30:222d:1d00::22e"]
+	if dhcp.Kind != KindGUA || dhcp.Interface != "WLAN" || !dhcp.Stable {
+		t.Errorf("Dhcp GUA misclassified: %+v", dhcp)
+	}
+	temp := byIP["240e:b30:222d:1d00:400c:7e8f:31b6:b5ef"]
+	if temp.Kind != KindGUA || temp.Stable {
+		t.Errorf("Temporary GUA should be unstable: %+v", temp)
+	}
+	pub := byIP["240e:b30:222d:1d00:51db:578e:a49d:b4eb"]
+	if pub.Kind != KindGUA || !pub.Stable {
+		t.Errorf("Public GUA misclassified: %+v", pub)
+	}
+	ll := byIP["fe80::4b0c:9506:4e93:b067"]
+	if ll.Kind != KindLinkLocal || ll.Zone != "10" || ll.Interface != "WLAN" {
+		t.Errorf("link-local misclassified: %+v", ll)
+	}
+	loop := byIP["::1"]
+	if loop.Kind != KindLoopback || loop.Interface != "Loopback Pseudo-Interface 1" {
+		t.Errorf("loopback misclassified: %+v", loop)
+	}
+}
+
+func TestParseNetshLocalizedHeader(t *testing.T) {
+	// Chinese Windows prints a localized interface header; the table body is
+	// unchanged.
+	sample := `接口 12: 以太网
+
+Addr Type  DAD State   Valid Life Pref. Life Address
+---------  ----------- ---------- ---------- ------------------------
+Public     Preferred     23h57m1s    3h57m1s 2408:8262:c7f:6c4f:2a:85cb:1452:5d19
 `
 	addrs := parseNetsh(sample)
 	if len(addrs) != 1 {
 		t.Fatalf("got %d addresses, want 1: %+v", len(addrs), addrs)
 	}
-	if addrs[0].Kind != KindGUA || addrs[0].Interface != "Ethernet" {
-		t.Errorf("netsh GUA misclassified: %+v", addrs[0])
+	if addrs[0].Kind != KindGUA || addrs[0].Interface != "以太网" || !addrs[0].Stable {
+		t.Errorf("localized netsh GUA misclassified: %+v", addrs[0])
 	}
 }
 

@@ -526,8 +526,17 @@ func parseIPAddr(s string) []Address {
 }
 
 // parseNetsh parses Windows `netsh interface ipv6 show addresses` output.
-// It handles both the tabular form ("Global ... 2001:db8::1") and the
-// verbose form ("Interface 12: Ethernet" / "IPv6 Address: 2001:db8::1").
+// The real output is one table per interface, with the address in the LAST
+// column and its type in the FIRST:
+//
+//	Interface 10: WLAN
+//
+//	Addr Type  DAD State   Valid Life Pref. Life Address
+//	---------  ----------- ---------- ---------- ------------------------
+//	Dhcp       Preferred       1h6m9s     1h6m9s 240e:b30:222d:1d00::22e
+//	Temporary  Preferred     23h57m1s    3h57m1s 240e:b30:222d:1d00:400c:...
+//	Public     Preferred     23h57m1s    3h57m1s 240e:b30:222d:1d00:51db:...
+//	Other      Preferred     infinite   infinite fe80::4b0c:9506:4e93:b067%10
 func parseNetsh(s string) []Address {
 	var addrs []Address
 	current := ""
@@ -536,40 +545,36 @@ func parseNetsh(s string) []Address {
 		if line == "" || strings.HasPrefix(line, "-") {
 			continue
 		}
-		if m := regexp.MustCompile(`(?i)^Interface\s+\d+:\s*(.+)$`).FindStringSubmatch(line); m != nil {
+		if m := netshIfaceRE.FindStringSubmatch(line); m != nil {
 			current = strings.TrimSpace(m[1])
 			continue
 		}
-		// Verbose form.
-		if m := regexp.MustCompile(`(?i)^IPv6 Address\s*:\s*([0-9a-fA-F:%.]+)`).FindStringSubmatch(line); m != nil {
-			appendNetshAddr(&addrs, current, m[1], "")
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
 			continue
 		}
-		// Tabular form: the first column is the IPv6 address, remaining columns
-		// are prefix length, lifetimes and state.
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && current != "" {
-			first := fields[0]
-			if strings.Contains(first, ":") && net.ParseIP(strings.Split(first, "%")[0]) != nil {
-				appendNetshAddr(&addrs, current, first, fields[len(fields)-1])
-			}
+		// Table rows end with the address; headers and separators do not parse
+		// as IPv6 literals and are skipped here.
+		addr, zone := splitZone(fields[len(fields)-1])
+		parsed := net.ParseIP(addr)
+		if parsed == nil || parsed.To4() != nil {
+			continue
 		}
+		// The address type ("Temporary" vs "Public"/"Dhcp"/"Other") carries the
+		// stability information.
+		flags := fields[0]
+		addrs = append(addrs, Address{
+			IP: parsed, Zone: zone, Interface: current,
+			Kind: Classify(parsed), Stable: StableForAddress(parsed, flags),
+			Method: ProbeMethodSkipped,
+		})
 	}
 	return addrs
 }
 
-func appendNetshAddr(addrs *[]Address, iface, raw, flags string) {
-	ip, zone := splitZone(raw)
-	parsed := net.ParseIP(ip)
-	if parsed == nil || parsed.To4() != nil {
-		return
-	}
-	*addrs = append(*addrs, Address{
-		IP: parsed, Zone: zone, Interface: iface,
-		Kind: Classify(parsed), Stable: StableForAddress(parsed, flags),
-		Method: ProbeMethodSkipped,
-	})
-}
+// netshIfaceRE matches interface header lines such as "Interface 10: WLAN".
+// Some localized Windows shells print the Chinese header instead.
+var netshIfaceRE = regexp.MustCompile(`(?i)^(?:Interface|接口)\s+\d+:\s*(.+)$`)
 
 // splitZone separates a scope id suffix (fe80::1%en0) from the address.
 func splitZone(s string) (string, string) {
