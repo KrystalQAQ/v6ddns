@@ -5,6 +5,10 @@ on:
     branches: ['**']
   pull_request:
 
+# 每次 push / PR 都编译一遍：四个主流平台加上路由器用的 linux-arm64，
+# 产物挂在本次 commit 的 short SHA 下（v6ddns-dev-<sha>-<target>）。
+# 打 tag 的正式发布仍然走 release.yml。
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,3 +21,78 @@ jobs:
       - run: gofmt -l . | tee /tmp/fmt.out && test ! -s /tmp/fmt.out
       - run: go vet ./...
       - run: go test ./...
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-amd64
+            goos: linux
+            goarch: amd64
+            cgo: '0'
+          - runner: ubuntu-latest
+            target: linux-arm64
+            goos: linux
+            goarch: arm64
+            cgo: '0'
+          - runner: macos-latest
+            target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            cgo: '1'
+          - runner: macos-latest
+            target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            cgo: '1'
+          - runner: windows-latest
+            target: windows-amd64
+            goos: windows
+            goarch: amd64
+            cgo: '0'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          version="dev-$(git rev-parse --short=7 HEAD)"
+          mkdir -p dist
+          if [ "$GOOS" = windows ]; then
+            go build -trimpath -ldflags="-s -w -X main.version=$version -H=windowsgui" -o dist/v6ddns.exe .
+          else
+            go build -trimpath -ldflags="-s -w -X main.version=$version" -o dist/v6ddns .
+          fi
+      - name: Package (unix)
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="dev-$(git rev-parse --short=7 HEAD)"
+          tar -C dist -czf "dist/v6ddns-$version-${{ matrix.target }}.tar.gz" v6ddns
+          rm dist/v6ddns
+      - name: Package (windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $version = "dev-" + (git rev-parse --short=7 HEAD)
+          Compress-Archive -Path dist/v6ddns.exe -DestinationPath "dist/v6ddns-$version-${{ matrix.target }}.zip"
+          Remove-Item dist/v6ddns.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v6ddns-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

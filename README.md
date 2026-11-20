@@ -63,6 +63,8 @@ export V6DDNS_ADMIN_PASSWORD='一个足够长的密码'
 - `v6ddns-<版本>-darwin-arm64.tar.gz`（Apple Silicon Mac）
 - `v6ddns-<版本>-windows-amd64.zip`
 
+> 每次 push 也会编译同样的目标（外加路由器用的 `linux-arm64`），不需要打 tag。产物在对应 workflow run 的 Artifacts 里，文件名带 commit short SHA：`v6ddns-dev-<sha>-<target>.tar.gz` / `.zip`，保留 14 天。
+
 Windows / Linux 构建不需要 CGO，也不需要 GTK/OpenGL 开发库。macOS 的托盘走 Cocoa，需要 Xcode Command Line Tools。
 
 > **macOS 未签名**：首次运行可能被 Gatekeeper 拦截。右键 → 打开，或执行 `xattr -d com.apple.quarantine ./v6ddns` 后即可正常打开。
