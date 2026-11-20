@@ -8,28 +8,37 @@ on:
 permissions:
   contents: write
 
+# Fyne needs CGO and native OpenGL/X11/WebKit dev libraries, so each target is
+# built on a native runner of the same OS. Builds are ad-hoc unsigned; macOS
+# binaries require the Gatekeeper workaround documented in README.md.
+
 jobs:
-  build:
-    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+  build-linux-amd64:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: arm
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
-          - goos: windows
-            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install native GUI libraries
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/v6ddns .
+          tar -C dist -czf dist/v6ddns-${GITHUB_REF_NAME}-linux-amd64.tar.gz v6ddns
+          rm dist/v6ddns
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v6ddns-linux-amd64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-darwin-amd64:
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,32 +47,66 @@ jobs:
           cache: true
       - name: Build
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+          CGO_ENABLED: '1'
         run: |
           mkdir -p dist
-          BIN=v6ddns
-          if [ "$GOOS" = "windows" ]; then BIN=v6ddns.exe; fi
-          go build -trimpath -ldflags="-s -w" -o "dist/${BIN}" .
-          ARCHIVE=v6ddns-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}
-          if [ "$GOOS" = "windows" ]; then
-            (cd dist && zip -q "${ARCHIVE}.zip" "${BIN}")
-            echo "ASSET=dist/${ARCHIVE}.zip" >> "$GITHUB_ENV"
-          else
-            tar -C dist -czf "dist/${ARCHIVE}.tar.gz" "${BIN}"
-            echo "ASSET=dist/${ARCHIVE}.tar.gz" >> "$GITHUB_ENV"
-          fi
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          go build -trimpath -ldflags="-s -w" -o dist/v6ddns .
+          tar -C dist -czf dist/v6ddns-${GITHUB_REF_NAME}-darwin-amd64.tar.gz v6ddns
+          rm dist/v6ddns
+      - uses: actions/upload-artifact@v4
         with:
-          name: v6ddns-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ${{ env.ASSET }}
+          name: v6ddns-darwin-amd64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-darwin-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/v6ddns .
+          tar -C dist -czf dist/v6ddns-${GITHUB_REF_NAME}-darwin-arm64.tar.gz v6ddns
+          rm dist/v6ddns
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v6ddns-darwin-arm64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-windows-amd64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+        shell: bash
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/v6ddns.exe .
+          (cd dist && zip -q v6ddns-${GITHUB_REF_NAME}-windows-amd64.zip v6ddns.exe)
+          rm dist/v6ddns.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v6ddns-windows-amd64
+          path: dist/*.zip
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build-linux-amd64, build-darwin-amd64, build-darwin-arm64, build-windows-amd64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,5 +1,7 @@
 # v6ddns — IPv6 DDNS TUI 工具规格
 
+> **历史文档**：这份规格写的是 v0.1（Bubble Tea TUI）。v0.2 起 TUI 已被 Fyne 原生 GUI + 系统托盘取代，实际功能和包结构以 `README.md` 为准。
+
 ## 一句话定位
 跨平台的 Cloudflare IPv6 DDNS **守护进程**：启动时是 TUI，可配置、可检测本机 IPv6 公网可达性、可手动更新；`--daemon` 模式后台常驻定时更新。Go 单文件二进制，Bubble Tea TUI。
 
