@@ -1,10 +1,12 @@
-// Package inbound wraps the Cloudflare Worker that probes inbound TCP
-// reachability from the Cloudflare edge.
+// Package inbound implements the Cloudflare-edge inbound reachability check
+// and the tiny HTTP listener the app exposes while it runs.
 //
-// Cloudflare Workers' connect() only accepts a hostname, never an IP literal,
-// so the probe cannot connect to an IPv6 address directly. Instead we temporarily
-// point a dedicated AAAA record (target.254253.xyz) at the address under test
-// and ask the Worker to connect to that hostname.
+// Cloudflare Workers' connect() only accepts a hostname, never an IP literal.
+// Callers therefore need a DNS name that points at the address under test: the
+// GUI check uses the configured DDNS domain after binding it, while the DDNS
+// gate points a dedicated probe name (target.<domain>) at a candidate before
+// the main record is touched. A successful Worker connection proves the full
+// path: public IPv6 -> router -> host listener.
 package inbound
 
 import (
@@ -21,20 +23,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/KrystalQAQ/v6ddns/internal/cloudflare"
 )
 
 const (
 	// DefaultWorkerURL is the deployed inbound probe Worker.
 	DefaultWorkerURL = "https://v6probe.254253.xyz"
-	// TargetHost is the hostname the Worker connects to. Its AAAA record is
-	// temporarily repointed at the IPv6 address being tested.
-	TargetHost = "target.254253.xyz"
-	// TargetRecordID is the AAAA record of TargetHost in ZoneID.
-	TargetRecordID = "e410a8bbfdc10ec6de4b5b4a15e876c2"
-	// ZoneID is the Cloudflare zone that owns TargetHost.
-	ZoneID = "a842a6a07648a7dfbcd7c457ef55fb53"
 
 	// defaultConnectIP is a known Cloudflare edge anycast IP. On machines with
 	// a TUN-mode proxy (FlClash etc.), local DNS for v6probe.254253.xyz returns
@@ -55,27 +48,28 @@ type Result struct {
 	Err       string         `json:"error"`
 }
 
-// Prober is the interface used by the TUI. Keeping it narrow makes the page
-// testable without a real Worker or Cloudflare account.
+// Prober is the narrow interface consumed by the GUI and the DDNS gate. Check
+// uses the domain given to NewProber; CheckHost accepts an explicit name so the
+// gate can verify a candidate through its dedicated probe record.
 type Prober interface {
-	Check(ctx context.Context, targetIPv6 string, port int) (Result, error)
+	Check(ctx context.Context, port int) (Result, error)
+	CheckHost(ctx context.Context, host string, port int) (Result, error)
 }
 
-// Client implements Prober using the Cloudflare DNS API and the probe Worker.
+// Client implements Prober by calling the Cloudflare-edge Worker. The caller
+// must ensure host already resolves to the address under test: Check assumes
+// the configured domain was bound, while CheckHost leaves that to the caller.
 type Client struct {
-	workerURL      string
-	httpClient     *http.Client
-	cf             cloudflare.ClientAPI
-	zoneID         string
-	targetRecordID string
+	workerURL  string
+	httpClient *http.Client
+	domain     string
 }
 
-// NewProber builds a Prober. The Cloudflare client is passed as an interface so
-// the same client the DDNS engine uses can be shared (and replaced whenever the
-// config is reloaded). httpClient may be nil; a fresh client is created then.
-// A custom client is cloned and given a dedicated transport that dials the real
-// Cloudflare edge IP for the Worker hostname, bypassing local fake-ip DNS.
-func NewProber(workerURL string, httpClient *http.Client, cf cloudflare.ClientAPI, zoneID, targetRecordID string) *Client {
+// NewProber builds a Prober for the given configured domain. httpClient may be
+// nil; a fresh client is created then. A custom client is cloned and given a
+// dedicated transport that dials the real Cloudflare edge IP for the Worker
+// hostname, bypassing local fake-ip DNS.
+func NewProber(workerURL string, httpClient *http.Client, domain string) *Client {
 	if workerURL == "" {
 		workerURL = DefaultWorkerURL
 	}
@@ -118,12 +112,34 @@ func NewProber(workerURL string, httpClient *http.Client, cf cloudflare.ClientAP
 	clone.Transport = transport
 
 	return &Client{
-		workerURL:      strings.TrimRight(workerURL, "/"),
-		httpClient:     &clone,
-		cf:             cf,
-		zoneID:         zoneID,
-		targetRecordID: targetRecordID,
+		workerURL:  strings.TrimRight(workerURL, "/"),
+		httpClient: &clone,
+		domain:     normalizeDomain(domain),
 	}
+}
+
+// normalizeDomain trims, lowercases and drops a trailing dot. IP literals are
+// not valid here because the Worker's connect() rejects them.
+func normalizeDomain(raw string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+}
+
+// validDomain reports whether s is a hostname the Worker can connect to.
+func validDomain(s string) bool {
+	if s == "" || net.ParseIP(s) != nil || !strings.Contains(s, ".") {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // workerHostname extracts the host (without port) from the Worker URL.
@@ -156,33 +172,29 @@ func dialTarget(addr, workerHost, override string) string {
 	return net.JoinHostPort(override, port)
 }
 
-// Check points the target AAAA record at targetIPv6 and asks the Worker to
-// open a TCP connection to TargetHost:port from the Cloudflare edge.
-func (c *Client) Check(ctx context.Context, targetIPv6 string, port int) (Result, error) {
-	if c.cf == nil {
-		return Result{}, errors.New("inbound: no Cloudflare client configured")
+// Check asks the Worker to open a TCP connection to the configured domain on
+// the given port from the Cloudflare edge. The caller must have already pointed
+// the domain's AAAA record at this machine.
+func (c *Client) Check(ctx context.Context, port int) (Result, error) {
+	return c.CheckHost(ctx, c.domain, port)
+}
+
+// CheckHost asks the Worker to connect to host:port. The name must resolve to
+// the address under test; the Worker rejects IP literals.
+func (c *Client) CheckHost(ctx context.Context, host string, port int) (Result, error) {
+	host = normalizeDomain(host)
+	if host == "" {
+		return Result{}, errors.New("inbound: domain is not configured")
+	}
+	if !validDomain(host) {
+		return Result{}, fmt.Errorf("inbound: %q is not a valid domain name", host)
 	}
 	if port < 1 || port > 65535 || port == 25 {
 		return Result{}, fmt.Errorf("inbound: invalid port %d", port)
 	}
-	ip := net.ParseIP(strings.TrimSpace(targetIPv6))
-	if ip == nil || ip.To4() != nil {
-		return Result{}, fmt.Errorf("inbound: target must be an IPv6 literal, got %q", targetIPv6)
-	}
-
-	zoneID, recordID := c.zoneID, c.targetRecordID
-	if zoneID == "" {
-		zoneID = ZoneID
-	}
-	if recordID == "" {
-		recordID = TargetRecordID
-	}
-	if err := c.cf.UpdateRecord(ctx, zoneID, recordID, ip.String(), 1, false); err != nil {
-		return Result{}, fmt.Errorf("inbound: point %s AAAA at %s: %w", TargetHost, ip, err)
-	}
 
 	query := url.Values{
-		"host":    {TargetHost},
+		"host":    {host},
 		"port":    {strconv.Itoa(port)},
 		"timeout": {strconv.Itoa(workerProbeTimeout)},
 	}

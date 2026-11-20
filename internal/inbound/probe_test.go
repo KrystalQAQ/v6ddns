@@ -3,35 +3,14 @@ package inbound
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/KrystalQAQ/v6ddns/internal/cloudflare"
 )
-
-type fakeRecordAPI struct {
-	content string
-	err     error
-	calls   int
-}
-
-func (f *fakeRecordAPI) GetRecord(context.Context, string, string) (cloudflare.Record, error) {
-	return cloudflare.Record{}, cloudflare.ErrRecordNotFound
-}
-func (f *fakeRecordAPI) UpdateRecord(_ context.Context, _, _, content string, _ int, _ bool) error {
-	f.calls++
-	if f.err != nil {
-		return f.err
-	}
-	f.content = content
-	return nil
-}
-func (f *fakeRecordAPI) CreateRecord(context.Context, string, string, string, int, bool) error {
-	return nil
-}
 
 func TestDialTarget(t *testing.T) {
 	tests := []struct {
@@ -56,21 +35,41 @@ func TestDialTarget(t *testing.T) {
 	}
 }
 
-func TestCheckUpdatesRecordAndParsesSuccess(t *testing.T) {
+func TestValidDomain(t *testing.T) {
+	valid := []string{"home.example.com", "a.b", "x-y.example.co"}
+	for _, d := range valid {
+		if !validDomain(d) {
+			t.Errorf("validDomain(%q) = false, want true", d)
+		}
+	}
+	invalid := []string{"", "localhost", "1.2.3.4", "2001:db8::1", "-bad.example.com", "bad-.example.com", "bad_domain.example.com"}
+	for _, d := range invalid {
+		if validDomain(d) {
+			t.Errorf("validDomain(%q) = true, want false", d)
+		}
+	}
+}
+
+func TestNormalizeDomain(t *testing.T) {
+	if got := normalizeDomain("  Home.Example.COM. "); got != "home.example.com" {
+		t.Fatalf("normalizeDomain = %q", got)
+	}
+}
+
+func TestCheckParsesSuccess(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true, "reachable": true, "latencyMs": 123.5,
-			"host": TargetHost, "port": 38080, "from": "cloudflare-edge",
+			"host": "home.example.com", "port": 38080, "from": "cloudflare-edge",
 		})
 	}))
 	defer srv.Close()
 
-	api := &fakeRecordAPI{}
-	p := NewProber(srv.URL, nil, api, "", "")
-	res, err := p.Check(context.Background(), "2001:db8::1", 38080)
+	p := NewProber(srv.URL, nil, "home.example.com")
+	res, err := p.Check(context.Background(), 38080)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -83,13 +82,36 @@ func TestCheckUpdatesRecordAndParsesSuccess(t *testing.T) {
 	if res.Err != "" {
 		t.Fatalf("unexpected error: %q", res.Err)
 	}
-	if api.calls != 1 || api.content != "2001:db8::1" {
-		t.Fatalf("record update calls=%d content=%q", api.calls, api.content)
-	}
-	for _, part := range []string{"host=" + TargetHost, "port=38080", "timeout=8000"} {
+	for _, part := range []string{"host=home.example.com", "port=38080", "timeout=8000"} {
 		if !strings.Contains(gotQuery, part) {
 			t.Fatalf("query %q missing %q", gotQuery, part)
 		}
+	}
+}
+
+func TestCheckHostUsesExplicitHost(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "reachable": true, "latencyMs": 12})
+	}))
+	defer srv.Close()
+
+	p := NewProber(srv.URL, nil, "")
+	res, err := p.CheckHost(context.Background(), "Probe.Example.COM.", 8081)
+	if err != nil {
+		t.Fatalf("CheckHost: %v", err)
+	}
+	if !res.Reachable {
+		t.Fatal("result must be reachable")
+	}
+	for _, part := range []string{"host=probe.example.com", "port=8081"} {
+		if !strings.Contains(gotQuery, part) {
+			t.Fatalf("query %q missing %q", gotQuery, part)
+		}
+	}
+	if _, err := p.Check(context.Background(), 8081); err == nil {
+		t.Fatal("Check with an empty configured domain must still fail")
 	}
 }
 
@@ -102,8 +124,8 @@ func TestCheckParsesUnreachable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewProber(srv.URL, nil, &fakeRecordAPI{}, "", "")
-	res, err := p.Check(context.Background(), "2408:8262:c7f:6c4f::1", 38080)
+	p := NewProber(srv.URL, nil, "home.example.com")
+	res, err := p.Check(context.Background(), 38080)
 	if err != nil {
 		t.Fatalf("unreachable response is still a valid result: %v", err)
 	}
@@ -118,22 +140,18 @@ func TestCheckParsesUnreachable(t *testing.T) {
 	}
 }
 
-func TestCheckRejectsIPv4AndBadPort(t *testing.T) {
-	p := NewProber("http://example.com", nil, &fakeRecordAPI{}, "", "")
-	if _, err := p.Check(context.Background(), "1.2.3.4", 80); err == nil {
-		t.Fatal("IPv4 literal must be rejected")
+func TestCheckRejectsBadInput(t *testing.T) {
+	p := NewProber("http://example.com", nil, "2001:db8::1")
+	if _, err := p.Check(context.Background(), 80); err == nil {
+		t.Fatal("IP literal domain must be rejected")
 	}
-	if _, err := p.Check(context.Background(), "2001:db8::1", 25); err == nil {
+	p = NewProber("http://example.com", nil, "")
+	if _, err := p.Check(context.Background(), 80); err == nil {
+		t.Fatal("empty domain must be rejected")
+	}
+	p = NewProber("http://example.com", nil, "home.example.com")
+	if _, err := p.Check(context.Background(), 25); err == nil {
 		t.Fatal("port 25 must be rejected")
-	}
-}
-
-func TestCheckRecordUpdateFailure(t *testing.T) {
-	api := &fakeRecordAPI{err: context.DeadlineExceeded}
-	p := NewProber("http://example.com", nil, api, "", "")
-	if _, err := p.Check(context.Background(), "2001:db8::1", 80); err == nil ||
-		!strings.Contains(err.Error(), "point "+TargetHost) {
-		t.Fatalf("expected record update error, got %v", err)
 	}
 }
 
@@ -147,5 +165,47 @@ func TestParseResponseOkFalse(t *testing.T) {
 func TestParseResponseMalformedJSON(t *testing.T) {
 	if _, err := parseResponse([]byte(`not-json`)); err == nil {
 		t.Fatal("expected decode error")
+	}
+}
+
+func TestStartServerServesHealth(t *testing.T) {
+	srv, err := StartServer(0)
+	if err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	defer srv.Close()
+	if srv.Port() == 0 {
+		t.Fatal("expected an ephemeral port")
+	}
+
+	resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(srv.Port()) + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"status":"ok"`) {
+		t.Fatalf("health response: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestStartServerServesRootPage(t *testing.T) {
+	srv, err := StartServer(0)
+	if err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	defer srv.Close()
+
+	resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(srv.Port()) + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "v6ddns") {
+		t.Fatalf("root response: %d %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("X-V6DDNS"); got != "listening" {
+		t.Fatalf("X-V6DDNS = %q", got)
 	}
 }

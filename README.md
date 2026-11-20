@@ -89,6 +89,8 @@ address: ""         # policy=manual 时填这里
 probe_targets:      # 可选，覆盖默认探测目标
   - "[2400:3200::1]:443"
 probe_timeout: 5s
+listen_port: 38080  # 应用启动后监听的 TCP 端口（入站检测复用）
+inbound_worker: https://v6probe.254253.xyz  # 可选，入站检测 Worker
 ```
 
 ### 地址选择策略（policy）
@@ -108,14 +110,17 @@ probe_timeout: 5s
 5. 这一步只证明"本机能用这个地址连出去 + IP 真实"，**不能证明外网能连进来**
 
 ### 入站可达（入站检测页）
-GUI 第 5 页集成了一个部署在 Cloudflare 边缘的探针（`https://v6probe.254253.xyz`，源码见 `probe-worker/`）：
-- 先把 `target.254253.xyz` 的 AAAA 记录指向待测 IPv6（通过 Cloudflare API）
-- 再让 Worker 从 CF 边缘主动 TCP 连接 `target.254253.xyz:<端口>`
+应用启动时就会在 `listen_port`（默认 38080）上监听一个只读状态页，不需要额外启动服务。
+「入站检测」页集成了一个部署在 Cloudflare 边缘的探针（`inbound_worker`，默认 `https://v6probe.254253.xyz`，源码见 `probe-worker/`）：
+- 先把本机 IPv6 写入配置的 `domain`（必须灰云），域名是必填项，不再使用硬编码的 target 子域
+- 再让 Worker 从 CF 边缘主动 TCP 连接 `domain:<listen_port>`
 - `reachable: true` = **公网真的能连进你的机器**
 
-这是真正的入站验证，出站探测做不到。实测本实例：`reachable=true, latency≈380ms`。
+这是真正的入站验证，出站探测做不到。实测本实例：`reachable=true, latency≈250ms`。
 
-> 注意：Cloudflare Workers 的 `connect()` 只接受域名、不接受 IP 字面地址，所以探针连的是专门的 `target.254253.xyz` 域名，而不是直接连 IPv6。详见 `probe-worker/README.md`。
+可选的「入站闸门」（`require_inbound`）会在写入主域名之前先验证候选地址：引擎为每个候选地址创建一次性的 `v6-<地址>.<probe_base>` AAAA 记录，Worker 实测通过后才更新主域名；`probe_base` 留空即使用主域名。每条地址使用唯一的验证名，避免 DNS 缓存让 Worker 验证到旧地址。
+
+> 注意：Cloudflare Workers 的 `connect()` 只接受域名、不接受 IP 字面地址，所以探针必须连一个解析到本机 IPv6 的域名。详见 `probe-worker/README.md`。
 
 ## 测试
 

@@ -61,9 +61,6 @@ func (g *App) refreshTrayMenu() {
 func (g *App) onDaemonEvent(ev daemon.Event) {
 	g.mu.Lock()
 	g.lastEvent = ev
-	if len(ev.Addrs) > 0 {
-		g.addrs = ev.Addrs
-	}
 	g.mu.Unlock()
 
 	now := time.Now()
@@ -75,17 +72,46 @@ func (g *App) onDaemonEvent(ev daemon.Event) {
 	g.notifyMutex.Unlock()
 
 	fyne.Do(func() {
-		g.statusTime.SetText(now.Format("2006-01-02 15:04:05"))
+		if g.statusTime != nil {
+			g.statusTime.SetText(now.Format("2006-01-02 15:04:05"))
+		}
+		if ev.Result.NewIP != "" {
+			if g.statusIP != nil {
+				g.statusIP.SetText(ev.Result.NewIP)
+			}
+			if g.ddnsLocalIP != nil {
+				g.ddnsLocalIP.SetText(ev.Result.NewIP)
+			}
+		}
+		if g.ddnsDomain != nil {
+			g.ddnsDomain.SetText(g.currentConfig().Domain)
+		}
 		if ev.Err != nil {
-			g.statusMsg.SetText("失败: " + ev.Err.Error())
+			if g.statusMsg != nil {
+				g.statusMsg.SetText("失败: " + ev.Err.Error())
+			}
+			setDot(g.statusDot, errorColor())
 		} else if ev.Result.Updated {
-			g.statusMsg.SetText(fmt.Sprintf("已更新 → %s", ev.Result.NewIP))
+			if g.statusMsg != nil {
+				g.statusMsg.SetText(fmt.Sprintf("已更新 → %s", ev.Result.NewIP))
+			}
+			if g.cfIP != nil {
+				g.cfIP.SetText(ev.Result.NewIP)
+			}
+			if g.cfState != nil {
+				g.cfState.SetText("刚刚写入 Cloudflare")
+			}
+			setDot(g.statusDot, successColor())
 		} else {
-			g.statusMsg.SetText(ev.Result.Message)
+			if g.statusMsg != nil {
+				g.statusMsg.SetText(ev.Result.Message)
+			}
+			setDot(g.statusDot, warningColor())
 		}
 		if g.ipTable != nil && len(ev.Addrs) > 0 {
 			g.addrs = ev.Addrs
 			g.ipTable.Refresh()
+			g.updateIPSummary(ev.Addrs)
 		}
 		g.refreshTrayMenu()
 	})

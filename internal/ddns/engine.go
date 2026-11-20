@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/KrystalQAQ/v6ddns/internal/cloudflare"
 	"github.com/KrystalQAQ/v6ddns/internal/config"
+	"github.com/KrystalQAQ/v6ddns/internal/inbound"
 	"github.com/KrystalQAQ/v6ddns/internal/ipv6"
 	"github.com/KrystalQAQ/v6ddns/internal/log"
 )
@@ -46,6 +48,7 @@ type engine struct {
 	cfg      config.Config
 	detector ipv6.Detector
 	cf       CloudflareClient
+	prober   inbound.Prober
 	logger   *log.Logger
 }
 
@@ -57,6 +60,11 @@ func NewEngine(cfg config.Config, detector ipv6.Detector, cf CloudflareClient, l
 	}
 	return &engine{cfg: cfg, detector: detector, cf: cf, logger: logger}
 }
+
+// SetInboundProber installs the external checker used when RequireInbound is
+// enabled. The engine does not build one itself because the Worker URL belongs
+// to the command-line entry point, not to the decision logic.
+func (e *engine) SetInboundProber(p inbound.Prober) { e.prober = p }
 
 var _ Engine = (*engine)(nil)
 
@@ -115,6 +123,15 @@ func (e *engine) RunOnce(ctx context.Context) (Result, error) {
 			e.logger.Info(result.Message, "ip", newIP, "domain", e.cfg.Domain)
 			return result, nil
 		}
+	}
+
+	// Verify before publishing: a candidate that cannot be reached from the
+	// Cloudflare edge must never replace a working record.
+	if err := e.verifyInbound(ctx, newIP); err != nil {
+		return result, err
+	}
+
+	if found {
 		if err := e.cf.UpdateRecord(ctx, e.cfg.ZoneID, record.ID, newIP, e.cfg.TTL, e.cfg.Proxied); err != nil {
 			return result, fmt.Errorf("ddns: update AAAA record: %w", err)
 		}
@@ -131,6 +148,78 @@ func (e *engine) RunOnce(ctx context.Context) (Result, error) {
 	result.Message = "AAAA record created"
 	e.logger.Info(result.Message, "ip", newIP, "domain", e.cfg.Domain, "manual", fromManual)
 	return result, nil
+}
+
+// probeRecordTTL is the TTL of the per-candidate probe record. 60s is
+// Cloudflare's minimum; each name is derived from the address, so its content
+// never changes during the record's lifetime.
+const probeRecordTTL = 60
+
+// verifyInbound points the dedicated probe name at ip and asks the external
+// prober whether host:port accepts a connection. Any error or a negative
+// result aborts the cycle before the main record is touched.
+func (e *engine) verifyInbound(ctx context.Context, ip string) error {
+	if !e.cfg.RequireInbound {
+		return nil
+	}
+	host := probeRecordName(e.cfg.EffectiveProbeBase(), ip)
+	port := e.cfg.EffectiveInboundPort()
+	if e.prober == nil {
+		return errors.New("ddns: require_inbound is enabled but no inbound prober is configured")
+	}
+	if host == "" || port < 1 || port > 65535 {
+		return fmt.Errorf("ddns: invalid inbound gate target %q:%d", host, port)
+	}
+	if err := e.ensureProbeRecord(ctx, host, ip); err != nil {
+		return fmt.Errorf("ddns: prepare probe record %s for %s: %w", host, ip, err)
+	}
+	res, err := e.prober.CheckHost(ctx, host, port)
+	if err != nil {
+		return fmt.Errorf("ddns: inbound check %s:%d: %w", host, port, err)
+	}
+	if !res.Reachable {
+		detail := res.Err
+		if detail == "" {
+			detail = "edge could not connect"
+		}
+		return fmt.Errorf("ddns: %s:%d unreachable from the edge (%s); AAAA record left unchanged", host, port, detail)
+	}
+	e.logger.Info("inbound verified before binding", "host", host, "port", port, "ip", ip, "latency", res.Latency.String())
+	return nil
+}
+
+// probeRecordName derives a DNS name unique to ip. A fresh name has no
+// resolver cache, which is what makes the pre-bind check trustworthy: the
+// Worker can only answer for the candidate address, never for an older one.
+func probeRecordName(base, ip string) string {
+	base = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(base)), ".")
+	hex := strings.ReplaceAll(strings.TrimSpace(ip), ":", "")
+	if base == "" || hex == "" {
+		return ""
+	}
+	return "v6-" + hex + "." + base
+}
+
+// ensureProbeRecord makes probeHost resolve to ip (AAAA, DNS only). Because the
+// name is derived from ip, an existing record must already carry that content;
+// a mismatch is an error rather than something to silently overwrite.
+func (e *engine) ensureProbeRecord(ctx context.Context, host, ip string) error {
+	rec, err := e.cf.GetRecord(ctx, e.cfg.ZoneID, host)
+	switch {
+	case err == nil:
+		if canonicalIP(net.ParseIP(rec.Content)) != ip {
+			return fmt.Errorf("existing record points at %q, want %q", rec.Content, ip)
+		}
+		if !rec.Proxied {
+			return nil
+		}
+		// Grey cloud is required for the Worker to reach the host directly.
+		return e.cf.UpdateRecord(ctx, e.cfg.ZoneID, rec.ID, ip, probeRecordTTL, false)
+	case errors.Is(err, cloudflare.ErrRecordNotFound):
+		return e.cf.CreateRecord(ctx, e.cfg.ZoneID, host, ip, probeRecordTTL, false)
+	default:
+		return err
+	}
 }
 
 // pickTarget returns the address to publish, or nil when none is usable.

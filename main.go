@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,17 +83,31 @@ func main() {
 		}
 		detector := ipv6.NewDetector(opts...)
 		cf := cloudflare.NewClient(c.APIToken, cloudflare.DefaultTimeout)
-		return detector, ddns.NewEngine(c, detector, cf, log.Default), cf
+		eng := ddns.NewEngine(c, detector, cf, log.Default)
+		if c.RequireInbound {
+			worker := strings.TrimSpace(c.InboundWorker)
+			if worker == "" {
+				worker = strings.TrimSpace(*inboundWorker)
+			}
+			eng.SetInboundProber(inbound.NewProber(worker, nil, c.Domain))
+		}
+		return detector, eng, cf
 	}
 
 	switch {
 	case *once:
 		logToStdout()
+		if srv := startGateListener(cfg); srv != nil {
+			defer srv.Close()
+		}
 		if err := runOnce(ctx, cfg, factory, interval); err != nil {
 			os.Exit(1)
 		}
 	case *daemonMode:
 		logToStdout()
+		if srv := startGateListener(cfg); srv != nil {
+			defer srv.Close()
+		}
 		daemon.RunLoop(ctx, cfg, store, factory, interval, nil)
 	default:
 		_, guiCancel := context.WithCancel(ctx)
@@ -125,6 +140,23 @@ func newStore(path string) *config.FileStore {
 
 func logToStdout() {
 	log.Default = log.New(os.Stdout, log.LevelInfo)
+}
+
+// startGateListener opens the app's built-in status listener when the inbound
+// gate relies on it (no explicit inbound_port). CLI modes otherwise have no
+// listener of their own, so a gate on listen_port would always fail.
+func startGateListener(cfg config.Config) *inbound.Server {
+	if !cfg.RequireInbound || cfg.InboundPort != 0 {
+		return nil
+	}
+	srv, err := inbound.StartServer(cfg.ListenPort)
+	if err != nil {
+		log.Warn("inbound gate listener not started; assuming the port is served externally",
+			"port", cfg.ListenPort, "error", err)
+		return nil
+	}
+	log.Info("inbound gate listener started", "addr", srv.Addr())
+	return srv
 }
 
 func runOnce(ctx context.Context, cfg config.Config, factory daemon.DepsFactory, timeout time.Duration) error {

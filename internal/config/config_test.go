@@ -3,9 +3,19 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// validConfig returns a config that passes Validate.
+func validConfig() Config {
+	c := Default()
+	c.APIToken = "cf_1234567890abcdef"
+	c.ZoneID = "zone-abc"
+	c.Domain = "home.example.com"
+	return c
+}
 
 func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -21,6 +31,10 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	want.Interval = "2m"
 	want.Policy = PolicyManual
 	want.Address = "2408:8262:c7f:6c4f:2a:85cb:1452:5d19"
+	want.ListenPort = 38081
+	want.RequireInbound = true
+	want.InboundPort = 8081
+	want.ProbeBase = "v6probe.home.example.com"
 
 	if err := store.Save(want); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -41,6 +55,30 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	if got.ProbeTimeout != "5s" {
 		t.Errorf("ProbeTimeout = %q, want default 5s", got.ProbeTimeout)
 	}
+	if got.ListenPort != 38081 {
+		t.Errorf("ListenPort = %d, want 38081", got.ListenPort)
+	}
+	if !got.RequireInbound || got.InboundPort != 8081 || got.ProbeBase != "v6probe.home.example.com" {
+		t.Errorf("inbound gate fields: got %+v", got)
+	}
+}
+
+func TestEffectiveInboundTargets(t *testing.T) {
+	c := validConfig()
+	if got := c.EffectiveInboundPort(); got != 38080 {
+		t.Errorf("default EffectiveInboundPort = %d, want listen port 38080", got)
+	}
+	if got := c.EffectiveProbeBase(); got != "home.example.com" {
+		t.Errorf("default EffectiveProbeBase = %q", got)
+	}
+	c.InboundPort = 8081
+	if got := c.EffectiveInboundPort(); got != 8081 {
+		t.Errorf("EffectiveInboundPort = %d, want 8081", got)
+	}
+	c.ProbeBase = "  Probe.Home.Example.COM. "
+	if got := c.EffectiveProbeBase(); got != "probe.home.example.com" {
+		t.Errorf("normalized EffectiveProbeBase = %q", got)
+	}
 }
 
 func TestFileStoreLoadMissingReturnsDefaults(t *testing.T) {
@@ -52,12 +90,18 @@ func TestFileStoreLoadMissingReturnsDefaults(t *testing.T) {
 	if got.TTL != 1 || got.Interval != "5m" || got.Policy != PolicyStableAuto {
 		t.Errorf("got %+v, want defaults", got)
 	}
+	if got.ListenPort != 38080 {
+		t.Errorf("ListenPort = %d, want default 38080", got.ListenPort)
+	}
 }
 
 func TestFileStoreFileMode0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not implement Unix file modes")
+	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	store := NewFileStoreWithPath(path)
-	if err := store.Save(Default()); err != nil {
+	if err := store.Save(validConfig()); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -91,16 +135,42 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"default ok", func(*Config) {}, false},
+		{"missing token", func(c *Config) { c.APIToken = "" }, true},
+		{"missing zone", func(c *Config) { c.ZoneID = "" }, true},
+		{"missing domain", func(c *Config) { c.Domain = "" }, true},
+		{"ip literal domain", func(c *Config) { c.Domain = "1.2.3.4" }, true},
+		{"listen port zero", func(c *Config) { c.ListenPort = 0 }, true},
+		{"listen port too high", func(c *Config) { c.ListenPort = 65536 }, true},
+		{"listen port smtp", func(c *Config) { c.ListenPort = 25 }, true},
 		{"bad interval", func(c *Config) { c.Interval = "nonsense" }, true},
 		{"bad probe timeout", func(c *Config) { c.ProbeTimeout = "nonsense" }, true},
 		{"unknown policy", func(c *Config) { c.Policy = "magic" }, true},
 		{"negative ttl", func(c *Config) { c.TTL = -1 }, true},
 		{"manual with ipv4", func(c *Config) { c.Policy = PolicyManual; c.Address = "1.2.3.4" }, true},
 		{"manual with ipv6", func(c *Config) { c.Policy = PolicyManual; c.Address = "2408::1" }, false},
+		{"inbound port negative", func(c *Config) { c.InboundPort = -1 }, true},
+		{"inbound port too high", func(c *Config) { c.InboundPort = 65536 }, true},
+		{"inbound port smtp", func(c *Config) { c.InboundPort = 25 }, true},
+		{"require inbound ok", func(c *Config) { c.RequireInbound = true; c.InboundPort = 8081 }, false},
+		{"require inbound default port ok", func(c *Config) { c.RequireInbound = true }, false},
+		{"require inbound proxied", func(c *Config) { c.RequireInbound = true; c.Proxied = true }, true},
+		{"require inbound bad probe base", func(c *Config) { c.RequireInbound = true; c.ProbeBase = "1.2.3.4" }, true},
+		{"require inbound probe base outside domain", func(c *Config) {
+			c.RequireInbound = true
+			c.ProbeBase = "target.other.example"
+		}, true},
+		{"require inbound probe base equals domain", func(c *Config) {
+			c.RequireInbound = true
+			c.ProbeBase = "home.example.com"
+		}, false},
+		{"require inbound custom probe base ok", func(c *Config) {
+			c.RequireInbound = true
+			c.ProbeBase = "v6probe.home.example.com"
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Default()
+			cfg := validConfig()
 			tc.mutate(&cfg)
 			err := cfg.Validate()
 			if (err != nil) != tc.wantErr {
@@ -131,7 +201,7 @@ func TestMaskToken(t *testing.T) {
 
 func TestFileStoreSaveRejectsInvalid(t *testing.T) {
 	store := NewFileStoreWithPath(filepath.Join(t.TempDir(), "config.yaml"))
-	cfg := Default()
+	cfg := validConfig()
 	cfg.Policy = "invalid"
 	if err := store.Save(cfg); err == nil {
 		t.Fatal("Save with invalid policy should fail")
