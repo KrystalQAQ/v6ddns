@@ -92,12 +92,12 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: '1'
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p dist
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
           go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/v6ddns.exe .
-          (cd dist && zip -q v6ddns-${GITHUB_REF_NAME}-windows-amd64.zip v6ddns.exe)
-          rm dist/v6ddns.exe
+          Compress-Archive -Path dist/v6ddns.exe -DestinationPath "dist/v6ddns-${env:GITHUB_REF_NAME}-windows-amd64.zip"
+          Remove-Item dist/v6ddns.exe
       - uses: actions/upload-artifact@v4
         with:
           name: v6ddns-windows-amd64
