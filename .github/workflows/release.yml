@@ -8,8 +8,8 @@ on:
 permissions:
   contents: write
 
-# Fyne needs CGO and native OpenGL/X11/WebKit dev libraries, so each target is
-# built on a native runner of the same OS. Builds are ad-hoc unsigned; macOS
+# The tray uses pure Go on Windows and Linux (CGO_ENABLED=0) and Cocoa on macOS,
+# which needs cgo and a native macOS runner. Builds are ad-hoc unsigned; macOS
 # binaries require the Gatekeeper workaround documented in README.md.
 
 jobs:
@@ -21,14 +21,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install native GUI libraries
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxkbcommon-dev libgles2-mesa-dev
       - name: Build
         env:
-          CGO_ENABLED: '1'
+          CGO_ENABLED: '0'
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/v6ddns .
+          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/v6ddns .
           tar -C dist -czf dist/v6ddns-${GITHUB_REF_NAME}-linux-amd64.tar.gz v6ddns
           rm dist/v6ddns
       - uses: actions/upload-artifact@v4
@@ -51,7 +49,7 @@ jobs:
           GOARCH: amd64
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/v6ddns .
+          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/v6ddns .
           tar -C dist -czf dist/v6ddns-${GITHUB_REF_NAME}-darwin-amd64.tar.gz v6ddns
           rm dist/v6ddns
       - uses: actions/upload-artifact@v4
@@ -73,7 +71,7 @@ jobs:
           CGO_ENABLED: '1'
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/v6ddns .
+          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/v6ddns .
           tar -C dist -czf dist/v6ddns-${GITHUB_REF_NAME}-darwin-arm64.tar.gz v6ddns
           rm dist/v6ddns
       - uses: actions/upload-artifact@v4
@@ -92,11 +90,11 @@ jobs:
           cache: true
       - name: Build
         env:
-          CGO_ENABLED: '1'
+          CGO_ENABLED: '0'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/v6ddns.exe .
+          go build -trimpath -ldflags="-s -w -X main.version=$env:GITHUB_REF_NAME -H=windowsgui" -o dist/v6ddns.exe .
           Compress-Archive -Path dist/v6ddns.exe -DestinationPath "dist/v6ddns-${env:GITHUB_REF_NAME}-windows-amd64.zip"
           Remove-Item dist/v6ddns.exe
       - uses: actions/upload-artifact@v4

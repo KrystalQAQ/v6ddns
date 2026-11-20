@@ -1,10 +1,11 @@
-// Command v6ddns is a Cloudflare IPv6 DDNS tool with a Fyne GUI and tray icon.
+// Command v6ddns is a Cloudflare IPv6 DDNS tool with a tray icon and a local
+// web console.
 //
 // Usage:
 //
-//	v6ddns                 # open the GUI window
-//	v6ddns --tray          # start hidden in the tray (used by autostart)
-//	v6ddns --daemon        # run continuously without a GUI (cron/systemd)
+//	v6ddns                 # start, open the console at 127.0.0.1:38081
+//	v6ddns --tray          # start hidden (used by autostart); no browser
+//	v6ddns --daemon        # run continuously with no UI (cron/systemd)
 //	v6ddns --once          # detect and update once, then exit
 //	v6ddns --config PATH   # use a specific config file
 //	v6ddns --icmp          # additionally try privileged ICMPv6 probes
@@ -14,27 +15,36 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/KrystalQAQ/v6ddns/internal/autostart"
+	"github.com/KrystalQAQ/v6ddns/internal/browser"
 	"github.com/KrystalQAQ/v6ddns/internal/cloudflare"
 	"github.com/KrystalQAQ/v6ddns/internal/config"
+	"github.com/KrystalQAQ/v6ddns/internal/console"
 	"github.com/KrystalQAQ/v6ddns/internal/daemon"
 	"github.com/KrystalQAQ/v6ddns/internal/ddns"
-	"github.com/KrystalQAQ/v6ddns/internal/gui"
 	"github.com/KrystalQAQ/v6ddns/internal/inbound"
 	"github.com/KrystalQAQ/v6ddns/internal/ipv6"
 	"github.com/KrystalQAQ/v6ddns/internal/log"
+	"github.com/KrystalQAQ/v6ddns/internal/service"
+	"github.com/KrystalQAQ/v6ddns/internal/tray"
 )
+
+// version is overridden at build time with -X main.version=...
+var version = ""
 
 func main() {
 	var (
-		daemonMode    = flag.Bool("daemon", false, "run in the background without a GUI")
+		daemonMode    = flag.Bool("daemon", false, "run in the background without a UI")
 		once          = flag.Bool("once", false, "detect and update once, then exit")
-		tray          = flag.Bool("tray", false, "start hidden in the system tray")
+		trayMode      = flag.Bool("tray", false, "start in the tray without opening the console")
 		configPath    = flag.String("config", "", "path to the configuration file")
 		icmp          = flag.Bool("icmp", false, "also try ICMPv6 probes (needs raw-socket privileges)")
 		inboundWorker = flag.String("inbound-worker", inbound.DefaultWorkerURL, "inbound probe Worker URL")
@@ -66,7 +76,7 @@ func main() {
 	defer stop()
 
 	// Dependencies are rebuilt from the latest config on every daemon cycle
-	// and whenever the GUI config page is saved.
+	// and whenever the console's config page is saved.
 	factory := func(c config.Config) (ipv6.Detector, ddns.Engine, cloudflare.ClientAPI) {
 		var opts []ipv6.Option
 		if *icmp {
@@ -110,20 +120,89 @@ func main() {
 		}
 		daemon.RunLoop(ctx, cfg, store, factory, interval, nil)
 	default:
-		_, guiCancel := context.WithCancel(ctx)
-		defer guiCancel()
-		if err := gui.Run(gui.Options{
-			Config:      cfg,
-			Store:       store,
-			Factory:     factory,
-			WorkerURL:   *inboundWorker,
-			StartHidden: *tray,
-			Cancel:      guiCancel,
-		}); err != nil {
-			fmt.Fprintln(os.Stderr, "GUI error:", err)
+		if err := runDesktop(ctx, stop, cfg, store, factory, *inboundWorker, *trayMode); err != nil {
+			fmt.Fprintln(os.Stderr, "v6ddns:", err)
 			os.Exit(1)
 		}
 	}
+}
+
+// runDesktop starts the service, the loopback console and the tray. It returns
+// when the tray is closed or the process receives a signal.
+func runDesktop(
+	ctx context.Context,
+	cancel func(),
+	cfg config.Config,
+	store *config.FileStore,
+	factory daemon.DepsFactory,
+	workerURL string,
+	startHidden bool,
+) error {
+	buf := log.NewBuffer(500)
+	logger := log.New(io.MultiWriter(os.Stderr, buf), log.LevelInfo)
+	if cfg.APIToken != "" {
+		logger.AddSecret(cfg.APIToken)
+	}
+	log.Default = logger
+
+	svc, err := service.New(service.Options{
+		Config:    cfg,
+		Store:     store,
+		Factory:   factory,
+		WorkerURL: workerURL,
+		AutoMgr:   autostart.New(),
+		Buffer:    buf,
+		Logger:    logger,
+		Version:   buildVersion(),
+	})
+	if err != nil {
+		return err
+	}
+
+	consoleSrv, err := console.Start(svc, fmt.Sprintf("127.0.0.1:%d", cfg.AdminPort))
+	if err != nil {
+		logger.Warn("console port unavailable; using an ephemeral port",
+			"port", cfg.AdminPort, "error", err)
+		consoleSrv, err = console.Start(svc, "127.0.0.1:0")
+		if err != nil {
+			return fmt.Errorf("start console: %w", err)
+		}
+	}
+	defer consoleSrv.Close()
+
+	svc.Start(ctx)
+	defer svc.Close()
+
+	logger.Info("console ready", "url", consoleSrv.URL())
+	fmt.Fprintln(os.Stderr, "控制台:", consoleSrv.URL())
+
+	openConsole := func() {
+		if err := browser.Open(consoleSrv.URL()); err != nil {
+			logger.Warn("open browser failed", "url", consoleSrv.URL(), "error", err)
+		}
+	}
+	if !startHidden {
+		openConsole()
+	}
+
+	tray.Run(ctx, tray.Options{
+		Service:     svc,
+		OpenConsole: openConsole,
+		Cancel:      cancel,
+	})
+	return nil
+}
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return "dev"
 }
 
 func newStore(path string) *config.FileStore {

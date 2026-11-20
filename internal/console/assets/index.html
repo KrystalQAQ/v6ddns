@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="v6ddns-token" content="__V6DDNS_TOKEN__">
+<title>v6ddns · IPv6 DDNS 控制台</title>
+<script src="/assets/theme-init.js"></script>
+<link rel="icon" href="/assets/icon.png" type="image/png">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.7 12 3l9 7.7V20a1 1 0 0 1-1 1h-5.2v-6.4H9.2V21H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.5 4 5.7 4 9s-1.4 6.5-4 9c-2.6-2.5-4-5.7-4-9s1.4-6.5 4-9z"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12m0 0 5-5m-5 5-5-5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h2m4 0h10M4 17h10m4 0h2"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 4v7h-7"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 2.8 20h18.4z"/><path d="M12 10v4.5M12 17.5v.1"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.9M6.5 7.8A17 17 0 0 0 2.5 12S6 18 12 18c1.5 0 2.8-.4 4-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10.5 10.5 0 0 1 13 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+  <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-mark" src="/assets/icon.png" alt="" width="36" height="36">
+      <div class="brand-text">
+        <strong>v6ddns</strong>
+        <span>Cloudflare · IPv6 DDNS</span>
+      </div>
+    </div>
+
+    <div class="side-status" id="side-status">
+      <span class="dot" id="side-dot" aria-hidden="true"></span>
+      <div class="side-status-text">
+        <strong id="side-state">连接中…</strong>
+        <span id="side-detail">正在读取本机状态</span>
+      </div>
+    </div>
+
+    <nav class="nav" aria-label="主导航">
+      <a class="nav-item" href="#/overview" data-nav="overview">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"/></svg><span>总览</span>
+      </a>
+      <a class="nav-item" href="#/addresses" data-nav="addresses">
+        <svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>IPv6 地址</span>
+      </a>
+      <a class="nav-item" href="#/ddns" data-nav="ddns">
+        <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><span>DDNS</span>
+      </a>
+      <a class="nav-item" href="#/inbound" data-nav="inbound">
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>入站检测</span>
+      </a>
+      <a class="nav-item" href="#/settings" data-nav="settings">
+        <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>配置</span>
+      </a>
+    </nav>
+
+    <div class="side-footer">
+      <div class="theme-switch" role="group" aria-label="配色方案">
+        <button type="button" data-theme="system" title="跟随系统" aria-label="跟随系统配色" aria-pressed="true">
+          <svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg>
+        </button>
+        <button type="button" data-theme="light" title="浅色" aria-label="浅色配色" aria-pressed="false">
+          <svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg>
+        </button>
+        <button type="button" data-theme="dark" title="深色" aria-label="深色配色" aria-pressed="false">
+          <svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+      </div>
+      <span class="version" id="side-version">v6ddns</span>
+    </div>
+  </aside>
+
+  <div class="main">
+    <main id="main" tabindex="-1">
+
+      <!-- ============ 总览 ============ -->
+      <section class="page" id="page-overview" data-page="overview" hidden>
+        <header class="page-head">
+          <div>
+            <h1>总览</h1>
+            <p>本机 IPv6 的发布状态与最近一次运行结果。</p>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn" id="btn-overview-refresh">
+              <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg><span>刷新</span>
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-overview-update">
+              <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg><span>立即更新</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="card hero" aria-labelledby="hero-title">
+          <div class="hero-main">
+            <span class="eyebrow" id="hero-title">当前发布地址</span>
+            <div class="ip-line">
+              <code class="ip" id="hero-ip">—</code>
+              <span class="copy">
+                <button type="button" class="icon-btn copy-button" command="--copy" commandfor="hero-ip" aria-label="复制当前发布地址">
+                  <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                </button>
+                <span class="tip" role="status"></span>
+              </span>
+            </div>
+            <div class="hero-sub">
+              <span class="domain" id="hero-domain">—</span>
+              <span class="pill" id="hero-status"><span class="dot" aria-hidden="true"></span><span class="pill-text">等待首次更新</span></span>
+            </div>
+            <p class="hero-message" id="hero-message">后台会按配置的间隔自动检测并同步。</p>
+          </div>
+          <dl class="hero-stats">
+            <div>
+              <dt>上次运行</dt>
+              <dd id="hero-time">—</dd>
+            </div>
+            <div>
+              <dt>更新间隔</dt>
+              <dd id="hero-interval">—</dd>
+            </div>
+            <div>
+              <dt>地址策略</dt>
+              <dd id="hero-policy">—</dd>
+            </div>
+          </dl>
+        </section>
+
+        <div class="grid-3">
+          <section class="card stat" aria-labelledby="stat-listen">
+            <div class="stat-head">
+              <svg class="icon" aria-hidden="true"><use href="#i-wifi"/></svg>
+              <h2 id="stat-listen">本机监听</h2>
+            </div>
+            <p class="stat-value" id="stat-listen-value">—</p>
+            <p class="stat-note" id="stat-listen-note">用于公网入站检测</p>
+          </section>
+          <section class="card stat" aria-labelledby="stat-record">
+            <div class="stat-head">
+              <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
+              <h2 id="stat-record">Cloudflare 记录</h2>
+            </div>
+            <p class="stat-value" id="stat-record-value">—</p>
+            <p class="stat-note" id="stat-record-note">点击刷新读取线上值</p>
+          </section>
+          <section class="card stat" aria-labelledby="stat-inbound">
+            <div class="stat-head">
+              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+              <h2 id="stat-inbound">公网入站</h2>
+            </div>
+            <p class="stat-value" id="stat-inbound-value">未检测</p>
+            <p class="stat-note" id="stat-inbound-note">从 Cloudflare 边缘发起连接</p>
+          </section>
+        </div>
+
+        <section class="card log-card" aria-labelledby="log-title">
+          <div class="card-head">
+            <div>
+              <h2 id="log-title">运行日志</h2>
+              <p>最近日志，实时刷新。</p>
+            </div>
+            <span class="log-live" id="log-live">实时</span>
+          </div>
+          <div class="log-list" id="log-list" role="log" aria-label="运行日志"></div>
+        </section>
+      </section>
+
+      <!-- ============ IPv6 ============ -->
+      <section class="page" id="page-addresses" data-page="addresses" hidden>
+        <header class="page-head">
+          <div>
+            <h1>IPv6 地址</h1>
+            <p>枚举本机全部 IPv6，并做源地址绑定的可达性探测。</p>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="btn-detect">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><span>检测 IPv6</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="summary" id="addr-summary">
+          <span class="summary-item">共 <strong id="sum-total">0</strong> 个地址</span>
+          <span class="summary-sep" aria-hidden="true">·</span>
+          <span class="summary-item"><strong id="sum-gua">0</strong> 个公网 GUA</span>
+          <span class="summary-sep" aria-hidden="true">·</span>
+          <span class="summary-item"><strong id="sum-reach">0</strong> 个可达</span>
+        </div>
+
+        <section class="card table-card" aria-labelledby="addr-caption">
+          <div class="table-wrapper" tabindex="0" role="region" aria-labelledby="addr-caption">
+            <table class="data-table" id="addr-table">
+              <caption id="addr-caption" class="visually-hidden">本机 IPv6 地址检测结果</caption>
+              <thead>
+                <tr>
+                  <th scope="col">地址</th>
+                  <th scope="col">网卡</th>
+                  <th scope="col">类型</th>
+                  <th scope="col">稳定</th>
+                  <th scope="col">可达</th>
+                  <th scope="col">延迟</th>
+                </tr>
+              </thead>
+              <tbody id="addr-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="addr-empty">
+            <svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>
+            <p>还没有检测过地址。</p>
+            <button type="button" class="btn" id="btn-detect-empty">开始检测</button>
+          </div>
+        </section>
+      </section>
+
+      <!-- ============ DDNS ============ -->
+      <section class="page" id="page-ddns" data-page="ddns" hidden>
+        <header class="page-head">
+          <div>
+            <h1>DDNS</h1>
+            <p>对比 Cloudflare 线上记录与本机当前地址。</p>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn" id="btn-record-refresh">
+              <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg><span>刷新记录</span>
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-ddns-update">
+              <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg><span>立即更新</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="grid-2">
+          <section class="card" aria-labelledby="remote-title">
+            <div class="card-head">
+              <div>
+                <h2 id="remote-title">Cloudflare 线上记录</h2>
+                <p>AAAA 记录</p>
+              </div>
+              <span class="pill" id="remote-state"><span class="dot" aria-hidden="true"></span><span class="pill-text">未读取</span></span>
+            </div>
+            <dl class="kv">
+              <div><dt>域名</dt><dd id="remote-domain">—</dd></div>
+              <div><dt>记录值</dt><dd class="mono" id="remote-content">—</dd></div>
+              <div><dt>TTL</dt><dd id="remote-ttl">—</dd></div>
+              <div><dt>代理</dt><dd id="remote-proxied">—</dd></div>
+            </dl>
+          </section>
+
+          <section class="card" aria-labelledby="local-title">
+            <div class="card-head">
+              <div>
+                <h2 id="local-title">本机候选</h2>
+                <p>最近一次检测到的可发布地址</p>
+              </div>
+            </div>
+            <div class="ip-line">
+              <code class="ip" id="local-ip">—</code>
+              <span class="copy">
+                <button type="button" class="icon-btn copy-button" command="--copy" commandfor="local-ip" aria-label="复制本机候选地址">
+                  <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                </button>
+                <span class="tip" role="status"></span>
+              </span>
+            </div>
+            <dl class="kv">
+              <div><dt>匹配状态</dt><dd id="local-match">—</dd></div>
+              <div><dt>最近结果</dt><dd id="local-result">—</dd></div>
+            </dl>
+            <p class="hint">直连必须保持灰云（DNS only），否则 Cloudflare 会隐藏真实地址。</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- ============ 入站 ============ -->
+      <section class="page" id="page-inbound" data-page="inbound" hidden>
+        <header class="page-head">
+          <div>
+            <h1>入站检测</h1>
+            <p>验证公网能否通过 IPv6 直接连到本机，而不是只验证本机能出去。</p>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="btn-inbound">
+              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>从公网检测</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="grid-2">
+          <section class="card" aria-labelledby="listen-title">
+            <div class="card-head">
+              <div>
+                <h2 id="listen-title">本机监听</h2>
+                <p>启动即监听，检测复用这个端口。</p>
+              </div>
+            </div>
+            <dl class="kv">
+              <div><dt>状态</dt><dd id="in-listen">—</dd></div>
+              <div><dt>域名</dt><dd id="in-domain">—</dd></div>
+              <div><dt>端口</dt><dd id="in-port">—</dd></div>
+            </dl>
+          </section>
+
+          <section class="card" aria-labelledby="check-title">
+            <div class="card-head">
+              <div>
+                <h2 id="check-title">检测结果</h2>
+                <p>先绑定域名，再由 Cloudflare 边缘发起 TCP 连接。</p>
+              </div>
+            </div>
+            <div class="inbound-result" id="inbound-result">
+              <span class="pill" id="inbound-pill"><span class="dot" aria-hidden="true"></span><span class="pill-text">尚未检测</span></span>
+              <p class="inbound-detail" id="inbound-detail">点击右上角「从公网检测」开始。</p>
+            </div>
+            <p class="hint">检测会先把本机 IPv6 写入配置的域名（灰云），再由 Worker 连入。若启用了入站闸门，会先验证候选地址再写主域名。</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- ============ 配置 ============ -->
+      <section class="page" id="page-settings" data-page="settings" hidden>
+        <header class="page-head">
+          <div>
+            <h1>配置</h1>
+            <p>保存后会立即写入配置；更新间隔从下一轮开始，控制台端口需重启生效。</p>
+          </div>
+        </header>
+
+        <form id="config-form" novalidate>
+          <fieldset class="card">
+            <legend>Cloudflare 账户</legend>
+            <p class="fieldset-note">带 * 为必填。域名同时用于 DDNS 与入站检测。</p>
+            <div class="field">
+              <label for="cfg-token">API Token <span class="req" aria-hidden="true">*</span></label>
+              <div class="input-row">
+                <input type="password" id="cfg-token" name="api_token" autocomplete="off" spellcheck="false" required aria-describedby="help-token">
+                <button type="button" class="icon-btn" id="btn-reveal-token" aria-pressed="false" aria-label="显示 Token">
+                  <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>
+                </button>
+              </div>
+              <span class="help" id="help-token">权限需要 Zone:DNS:Edit 与 Zone:Zone:Read。</span>
+              <span class="field-error" id="err-token" role="alert"></span>
+            </div>
+            <div class="field">
+              <label for="cfg-zone">Zone ID <span class="req" aria-hidden="true">*</span></label>
+              <input type="text" id="cfg-zone" name="zone_id" autocomplete="off" spellcheck="false" required aria-describedby="help-zone">
+              <span class="help" id="help-zone">Cloudflare 域名概览页右侧的 Zone ID。</span>
+              <span class="field-error" id="err-zone" role="alert"></span>
+            </div>
+            <div class="field">
+              <label for="cfg-domain">域名 <span class="req" aria-hidden="true">*</span></label>
+              <input type="text" id="cfg-domain" name="domain" autocomplete="off" spellcheck="false" required placeholder="host.example.com" aria-describedby="help-domain">
+              <span class="help" id="help-domain">要更新 AAAA 记录的完整域名。</span>
+              <span class="field-error" id="err-domain" role="alert"></span>
+            </div>
+            <div class="grid-2 field-row">
+              <div class="field">
+                <label for="cfg-ttl">TTL</label>
+                <input type="text" id="cfg-ttl" name="ttl" inputmode="numeric" pattern="\d+" value="1" aria-describedby="help-ttl">
+                <span class="help" id="help-ttl">1 表示自动。</span>
+                <span class="field-error" id="err-ttl" role="alert"></span>
+              </div>
+              <div class="field checkbox-field">
+                <label class="check">
+                  <input type="checkbox" id="cfg-proxied" name="proxied">
+                  <span>橙云代理</span>
+                </label>
+                <span class="help">入站检测与直连必须关闭。</span>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="card">
+            <legend>IPv6 来源</legend>
+            <p class="fieldset-note">决定把哪个本机地址发布出去。</p>
+            <div class="grid-2 field-row">
+              <div class="field">
+                <label for="cfg-iface">网卡</label>
+                <input type="text" id="cfg-iface" name="interface_name" autocomplete="off" spellcheck="false" placeholder="留空表示全部网卡" aria-describedby="help-iface">
+                <span class="help" id="help-iface">只检测这块网卡，例如 WLAN。</span>
+              </div>
+              <div class="field">
+                <label for="cfg-policy">策略</label>
+                <select id="cfg-policy" name="policy">
+                  <option value="stable-auto">stable-auto · 稳定且可达</option>
+                  <option value="any-reachable">any-reachable · 任意可达</option>
+                  <option value="manual">manual · 手动指定</option>
+                </select>
+                <span class="help">manual 时使用下方的「手动 IPv6」。</span>
+              </div>
+            </div>
+            <div class="field">
+              <label for="cfg-address">手动 IPv6</label>
+              <input type="text" id="cfg-address" name="address" autocomplete="off" spellcheck="false" placeholder="240e:…" aria-describedby="help-address">
+              <span class="help" id="help-address">仅 manual 策略使用；不会做可达性探测。</span>
+            </div>
+            <div class="grid-2 field-row">
+              <div class="field">
+                <label for="cfg-probes">探测目标</label>
+                <input type="text" id="cfg-probes" name="probe_targets" autocomplete="off" spellcheck="false" aria-describedby="help-probes">
+                <span class="help" id="help-probes">逗号分隔，例如 [2400:3200::1]:443。留空用默认值。</span>
+              </div>
+              <div class="field">
+                <label for="cfg-probe-timeout">探测超时</label>
+                <input type="text" id="cfg-probe-timeout" name="probe_timeout" autocomplete="off" spellcheck="false" placeholder="5s" aria-describedby="help-probe-timeout">
+                <span class="help" id="help-probe-timeout">Go duration，例如 5s。</span>
+                <span class="field-error" id="err-probe-timeout" role="alert"></span>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="card">
+            <legend>运行</legend>
+            <div class="grid-2 field-row">
+              <div class="field">
+                <label for="cfg-interval">更新间隔</label>
+                <input type="text" id="cfg-interval" name="interval" autocomplete="off" spellcheck="false" placeholder="5m" aria-describedby="help-interval">
+                <span class="help" id="help-interval">Go duration，例如 30s、5m、1h。</span>
+                <span class="field-error" id="err-interval" role="alert"></span>
+              </div>
+              <div class="field">
+                <label for="cfg-listen-port">监听端口</label>
+                <input type="text" id="cfg-listen-port" name="listen_port" inputmode="numeric" pattern="\d+" aria-describedby="help-listen">
+                <span class="help" id="help-listen">公网入站检测使用的 TCP 端口。</span>
+                <span class="field-error" id="err-listen" role="alert"></span>
+              </div>
+            </div>
+            <div class="grid-2 field-row">
+              <div class="field">
+                <label for="cfg-admin-port">控制台端口</label>
+                <input type="text" id="cfg-admin-port" name="admin_port" inputmode="numeric" pattern="\d+" aria-describedby="help-admin">
+                <span class="help" id="help-admin">只绑定 127.0.0.1，修改后重启生效。</span>
+                <span class="field-error" id="err-admin" role="alert"></span>
+              </div>
+              <div class="field">
+                <label for="cfg-worker">入站 Worker</label>
+                <input type="text" id="cfg-worker" name="inbound_worker" autocomplete="off" spellcheck="false" placeholder="https://v6probe.254253.xyz" aria-describedby="help-worker">
+                <span class="help" id="help-worker">Cloudflare 边缘探针地址。</span>
+              </div>
+            </div>
+            <div class="field checkbox-field">
+              <label class="check">
+                <input type="checkbox" id="cfg-autostart" name="autostart">
+                <span>开机自启动（驻留托盘）</span>
+              </label>
+              <span class="help">登录后以 --tray 启动，不自动打开浏览器。</span>
+            </div>
+          </fieldset>
+
+          <fieldset class="card">
+            <legend>入站闸门</legend>
+            <p class="fieldset-note">开启后，候选地址必须先通过公网实测，才会写入主域名的 AAAA。</p>
+            <div class="field checkbox-field">
+              <label class="check">
+                <input type="checkbox" id="cfg-require-inbound" name="require_inbound">
+                <span>仅在入站可达时写入 AAAA</span>
+              </label>
+            </div>
+            <div class="grid-2 field-row">
+              <div class="field">
+                <label for="cfg-inbound-port">验证端口</label>
+                <input type="text" id="cfg-inbound-port" name="inbound_port" inputmode="numeric" pattern="\d*" aria-describedby="help-inbound-port">
+                <span class="help" id="help-inbound-port">留空或 0 表示使用监听端口。</span>
+                <span class="field-error" id="err-inbound-port" role="alert"></span>
+              </div>
+              <div class="field">
+                <label for="cfg-probe-base">验证基域</label>
+                <input type="text" id="cfg-probe-base" name="probe_base" autocomplete="off" spellcheck="false" aria-describedby="help-probe-base">
+                <span class="help" id="help-probe-base">留空即使用域名；每条候选地址会生成唯一的 v6-&lt;地址&gt; 子域。</span>
+              </div>
+            </div>
+          </fieldset>
+
+          <div class="save-bar">
+            <span class="save-status" id="save-status" role="status"></span>
+            <div class="save-actions">
+              <button type="button" class="btn" id="btn-config-reset">撤销修改</button>
+              <button type="submit" class="btn btn-primary" id="btn-config-save">保存并应用</button>
+            </div>
+          </div>
+          <p class="config-path">配置文件：<code id="config-path">—</code></p>
+        </form>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<script src="/assets/app.js"></script>
+</body>
+</html>

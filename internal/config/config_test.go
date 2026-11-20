@@ -31,7 +31,7 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	want.Interval = "2m"
 	want.Policy = PolicyManual
 	want.Address = "2408:8262:c7f:6c4f:2a:85cb:1452:5d19"
-	want.ListenPort = 38081
+	want.ListenPort = 38090
 	want.RequireInbound = true
 	want.InboundPort = 8081
 	want.ProbeBase = "v6probe.home.example.com"
@@ -55,8 +55,8 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	if got.ProbeTimeout != "5s" {
 		t.Errorf("ProbeTimeout = %q, want default 5s", got.ProbeTimeout)
 	}
-	if got.ListenPort != 38081 {
-		t.Errorf("ListenPort = %d, want 38081", got.ListenPort)
+	if got.ListenPort != 38090 {
+		t.Errorf("ListenPort = %d, want 38090", got.ListenPort)
 	}
 	if !got.RequireInbound || got.InboundPort != 8081 || got.ProbeBase != "v6probe.home.example.com" {
 		t.Errorf("inbound gate fields: got %+v", got)
@@ -92,6 +92,9 @@ func TestFileStoreLoadMissingReturnsDefaults(t *testing.T) {
 	}
 	if got.ListenPort != 38080 {
 		t.Errorf("ListenPort = %d, want default 38080", got.ListenPort)
+	}
+	if got.AdminPort != 38081 {
+		t.Errorf("AdminPort = %d, want default 38081", got.AdminPort)
 	}
 }
 
@@ -142,6 +145,9 @@ func TestValidate(t *testing.T) {
 		{"listen port zero", func(c *Config) { c.ListenPort = 0 }, true},
 		{"listen port too high", func(c *Config) { c.ListenPort = 65536 }, true},
 		{"listen port smtp", func(c *Config) { c.ListenPort = 25 }, true},
+		{"admin port zero", func(c *Config) { c.AdminPort = 0 }, true},
+		{"admin port too high", func(c *Config) { c.AdminPort = 65536 }, true},
+		{"admin port equals listen", func(c *Config) { c.AdminPort = c.ListenPort }, true},
 		{"bad interval", func(c *Config) { c.Interval = "nonsense" }, true},
 		{"bad probe timeout", func(c *Config) { c.ProbeTimeout = "nonsense" }, true},
 		{"unknown policy", func(c *Config) { c.Policy = "magic" }, true},

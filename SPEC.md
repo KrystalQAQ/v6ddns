@@ -1,6 +1,6 @@
 # v6ddns — IPv6 DDNS TUI 工具规格
 
-> **历史文档**：这份规格写的是 v0.1（Bubble Tea TUI）。v0.2 起 TUI 已被 Fyne 原生 GUI + 系统托盘取代，实际功能和包结构以 `README.md` 为准。
+> **历史文档**：这份规格写的是 v0.1（Bubble Tea TUI）。v0.2 起 TUI 已被 Fyne 原生 GUI 取代；v0.3 又改为**系统托盘 + 本机 Web 控制台**（仅监听 127.0.0.1，不是对外 WebUI）。实际功能和包结构以 `README.md` 为准。
 
 ## 一句话定位
 跨平台的 Cloudflare IPv6 DDNS **守护进程**：启动时是 TUI，可配置、可检测本机 IPv6 公网可达性、可手动更新；`--daemon` 模式后台常驻定时更新。Go 单文件二进制，Bubble Tea TUI。
@@ -74,7 +74,7 @@
 - 不做 IPv4 DDNS。
 - 不做多域名批量（单域名即可；留好结构以后加）。
 - 不做 Cloudflare Tunnel。
-- 不做 WebUI。
+- 不做可远程访问的 WebUI（v0.3 的本机控制台只绑 127.0.0.1，不属于此类）。
 
 ## 交付与验收
 - `go build ./...` 通过；`go vet` 无明显问题。

@@ -68,10 +68,14 @@ type Config struct {
 	// ProbeTimeout is the Go duration for each individual network probe (default 5s).
 	ProbeTimeout string `yaml:"probe_timeout,omitempty"`
 
-	// ListenPort is the TCP port the GUI opens on startup for inbound
+	// ListenPort is the TCP port the app opens on startup for inbound
 	// reachability checks (default 38080). The app serves a tiny HTTP page on
 	// it; the Cloudflare Worker connects to the configured domain on this port.
 	ListenPort int `yaml:"listen_port"`
+
+	// AdminPort is the loopback-only port of the local web console
+	// (default 38081). It is never exposed on the public interface.
+	AdminPort int `yaml:"admin_port,omitempty"`
 
 	// InboundWorker is the Cloudflare Worker endpoint used for inbound checks.
 	// Empty means "use the value from the --inbound-worker flag / default".
@@ -104,6 +108,7 @@ func Default() Config {
 		Policy:       PolicyStableAuto,
 		ProbeTimeout: "5s",
 		ListenPort:   38080,
+		AdminPort:    38081,
 	}
 }
 
@@ -231,6 +236,9 @@ func parse(data []byte) (Config, error) {
 	if cfg.ListenPort == 0 {
 		cfg.ListenPort = Default().ListenPort
 	}
+	if cfg.AdminPort == 0 {
+		cfg.AdminPort = Default().AdminPort
+	}
 	cfg.Policy = TargetPolicy(strings.ToLower(strings.TrimSpace(string(cfg.Policy))))
 	if cfg.InterfaceName != "" {
 		cfg.InterfaceName = strings.TrimSpace(cfg.InterfaceName)
@@ -263,6 +271,12 @@ func (c Config) Validate() error {
 	}
 	if c.ListenPort == 25 {
 		return fmt.Errorf("config: listen_port 25 is not allowed")
+	}
+	if c.AdminPort < 1 || c.AdminPort > 65535 {
+		return fmt.Errorf("config: admin_port must be 1-65535, got %d", c.AdminPort)
+	}
+	if c.AdminPort == c.ListenPort {
+		return fmt.Errorf("config: admin_port must differ from listen_port (%d)", c.ListenPort)
 	}
 	if c.InboundPort < 0 || c.InboundPort > 65535 {
 		return fmt.Errorf("config: inbound_port must be 0 (use listen_port) or 1-65535, got %d", c.InboundPort)
