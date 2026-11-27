@@ -51,8 +51,15 @@ func RunCycle(ctx context.Context, cfg config.Config, factory DepsFactory, timeo
 	if err != nil {
 		return Event{Addrs: addrs, Err: err}
 	}
-	log.Info("ddns result", "updated", result.Updated, "old", result.OldIP,
-		"new", result.NewIP, "message", result.Message)
+	// INFO is reserved for actual changes and anomalies; the unchanged
+	// heartbeat would otherwise dominate syslog and the persistent log file.
+	if result.Updated {
+		log.Info("ddns result", "updated", result.Updated, "old", result.OldIP,
+			"new", result.NewIP, "message", result.Message)
+	} else {
+		log.Debug("ddns result", "updated", result.Updated, "old", result.OldIP,
+			"new", result.NewIP, "message", result.Message)
+	}
 	if result.Timestamp.IsZero() {
 		result.Timestamp = time.Now()
 	}

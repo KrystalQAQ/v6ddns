@@ -1,6 +1,6 @@
 # v6ddns
 
-一个跨平台的 **Cloudflare IPv6 DDNS** 小工具：常驻系统托盘，管理界面是一个默认只监听本机的 Web 控制台（`127.0.0.1:38081`）。它能检测本机 IPv6 是否公网可达，并把可达的稳定地址自动写进 Cloudflare 的 AAAA 记录；还能从内核邻居表里按 MAC 找到局域网设备的 IPv6 地址，为它们分别维护 AAAA 记录。控制台用浏览器打开，Tauri/Fyne 那套 WebView/OpenGL 依赖统统不需要；空闲时常驻内存约 25MB。
+一个跨平台的 **Cloudflare DDNS** 小工具：常驻系统托盘，管理界面是一个默认只监听本机的 Web 控制台（`127.0.0.1:38081`）。它能检测本机 IPv6 是否公网可达，并把可达的稳定地址自动写进 Cloudflare 的 AAAA 记录；还能从内核邻居表里按 MAC 找到局域网设备的 IPv6 地址，为它们分别维护 AAAA 记录。可选再维护一条 A 记录，把本机公网 IPv4 写到指定域名。控制台用浏览器打开，Tauri/Fyne 那套 WebView/OpenGL 依赖统统不需要；空闲时常驻内存约 25MB。
 
 ## 它解决什么现成工具没解决的问题
 
@@ -110,11 +110,22 @@ https://dash.cloudflare.com/profile/api-tokens → Create Token → 权限 `Zone
 
 配置保存在：`~/Library/Application Support/v6ddns/config.yaml`（macOS）、`~/.config/v6ddns/config.yaml`（Linux）、`%AppData%\v6ddns\config.yaml`（Windows）。
 
+### 4. 日志
+
+默认只写 stdout/stderr，由 systemd / procd 收进各自的日志。设置 `V6DDNS_LOG_FILE` 后同时追加到一个自带轮转的文件：
+
+```bash
+V6DDNS_LOG_FILE=/root/logs/v6ddns.log ./v6ddns --daemon --console
+```
+
+文件按 5 MiB 轮转，保留一份 `.1`，权限 `0600`。`INFO` 只记录变更和异常（AAAA 更新/创建、没有可用地址、入站探测失败、启停、配置保存、手动操作）；每 5 分钟一次的 `IPv6 unchanged, skipped` 心跳是 `DEBUG`，不会写进文件，也不再占用 syslog。
+
 ### 配置示例
 ```yaml
 api_token: your-token-here
 zone_id: 0123456789abcdef0123456789abcdef
 domain: mac.example.com
+ipv4_domain: ""     # 可选：把本机公网 IPv4 更新到这个 A 记录；留空不更新 IPv4
 ttl: 1              # 1 = automatic
 proxied: false      # 直连必须灰云；橙云会隐藏真实 IP 且只代理 HTTP(S)
 interface_name: ""  # 只检测这块网卡；留空则全部
@@ -140,6 +151,12 @@ records:            # 可选，主域名之外再维护的 AAAA 记录
     source: interface
     interface: ppp0 # 可选，指定这块网卡上的地址
 ```
+
+### IPv4 A 记录（可选）
+
+在配置页填「IPv4 域名」或写 `ipv4_domain` 后，每一轮会向 `ipv4.icanhazip.com` / `checkip.amazonaws.com` / `ifconfig.me` 查询本机公网 IPv4（连接强制走 IPv4，避免双栈主机返回 IPv6），再与 Cloudflare 上已有的 A 记录比较，必要时更新或创建。TTL 和橙云开关继承顶层的 `ttl` / `proxied`。总览页会多出一张「IPv4 记录」卡片显示这条 A 记录的当前值，DDNS 页的托管记录表用 `A` / `AAAA` 徽章区分两种记录。
+
+`require_inbound` 只校验 AAAA 候选（Worker 通过按地址命名的 AAAA 探测记录回连），不校验 A 记录；IPv4 入站通常还受上游 NAT 限制，因此 A 记录按“探测到公网地址就更新”处理。检测失败只会打 WARN，不会改动现有记录。
 
 ### 地址选择策略（policy）
 | 值 | 行为 |

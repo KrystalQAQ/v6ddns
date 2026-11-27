@@ -240,7 +240,7 @@ func (s *Service) Record(ctx context.Context) (cloudflare.Record, error) {
 	if cf == nil {
 		return cloudflare.Record{}, errors.New("没有可用的 Cloudflare 客户端")
 	}
-	return cf.GetRecord(ctx, cfg.ZoneID, cfg.Domain)
+	return cf.GetRecord(ctx, cfg.ZoneID, cfg.Domain, cloudflare.RecordTypeAAAA)
 }
 
 // InboundResult is the console-facing result of a public inbound check.
@@ -402,6 +402,7 @@ type EventStatus struct {
 // RecordStatus is the console-facing view of one configured AAAA record.
 type RecordStatus struct {
 	Domain  string `json:"domain"`
+	Type    string `json:"type"`
 	Source  string `json:"source"`
 	Updated bool   `json:"updated"`
 	OldIP   string `json:"old_ip"`
@@ -445,6 +446,7 @@ type Status struct {
 	ConfigPath  string          `json:"config_path"`
 	AdminURL    string          `json:"admin_url"`
 	Domain      string          `json:"domain"`
+	IPv4Domain  string          `json:"ipv4_domain,omitempty"`
 	Policy      string          `json:"policy"`
 	Interval    string          `json:"interval"`
 	ListenPort  int             `json:"listen_port"`
@@ -473,6 +475,7 @@ func (s *Service) Status() Status {
 	for _, r := range ev.Result.Records {
 		records = append(records, RecordStatus{
 			Domain:  r.Domain,
+			Type:    r.Type,
 			Source:  r.Source,
 			Updated: r.Updated,
 			OldIP:   r.OldIP,
@@ -487,6 +490,7 @@ func (s *Service) Status() Status {
 		ConfigPath:  s.store.Path(),
 		AdminURL:    adminURL,
 		Domain:      cfg.Domain,
+		IPv4Domain:  cfg.IPv4DomainName(),
 		Policy:      string(cfg.Policy),
 		Interval:    cfg.Interval,
 		ListenPort:  cfg.ListenPort,

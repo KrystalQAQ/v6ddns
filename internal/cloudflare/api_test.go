@@ -44,7 +44,7 @@ func TestGetRecord(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWithBaseURL(testToken, srv.URL, time.Second)
-	got, err := c.GetRecord(context.Background(), "zone-1", want.Name)
+	got, err := c.GetRecord(context.Background(), "zone-1", want.Name, RecordTypeAAAA)
 	if err != nil {
 		t.Fatalf("GetRecord: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestGetRecordNotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWithBaseURL(testToken, srv.URL, time.Second)
-	_, err := c.GetRecord(context.Background(), "zone-1", "missing.example.com")
+	_, err := c.GetRecord(context.Background(), "zone-1", "missing.example.com", RecordTypeAAAA)
 	if !errors.Is(err, ErrRecordNotFound) {
 		t.Fatalf("err = %v, want ErrRecordNotFound", err)
 	}
@@ -119,13 +119,46 @@ func TestCreateRecord(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWithBaseURL(testToken, srv.URL, time.Second)
-	err := c.CreateRecord(context.Background(), "zone-1", "home.example.com", "2408::2", 1, false)
+	err := c.CreateRecord(context.Background(), "zone-1", "home.example.com", "2408::2", RecordTypeAAAA, 1, false)
 	if err != nil {
 		t.Fatalf("CreateRecord: %v", err)
 	}
 	want := recordCreate{Type: RecordTypeAAAA, Name: "home.example.com", Content: "2408::2", TTL: 1, Proxied: false}
 	if gotBody != want {
 		t.Errorf("body = %+v, want %+v", gotBody, want)
+	}
+}
+
+func TestGetRecordA(t *testing.T) {
+	want := Record{ID: "rec-a", Type: RecordTypeA, Name: "v4.example.com", Content: "1.2.3.4", TTL: 1}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("type"); got != RecordTypeA {
+			t.Errorf("type query = %q, want A", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result":  []Record{want},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClientWithBaseURL(testToken, srv.URL, time.Second)
+	got, err := c.GetRecord(context.Background(), "zone-1", want.Name, RecordTypeA)
+	if err != nil {
+		t.Fatalf("GetRecord: %v", err)
+	}
+	if got != want {
+		t.Errorf("record = %+v, want %+v", got, want)
+	}
+}
+
+func TestUnsupportedRecordType(t *testing.T) {
+	c := NewClientWithBaseURL(testToken, "http://127.0.0.1:1", time.Second)
+	if _, err := c.GetRecord(context.Background(), "zone-1", "example.com", "TXT"); err == nil {
+		t.Fatal("want error for unsupported record type")
+	}
+	if err := c.CreateRecord(context.Background(), "zone-1", "example.com", "x", "TXT", 1, false); err == nil {
+		t.Fatal("want error for unsupported record type")
 	}
 }
 
@@ -143,7 +176,7 @@ func TestAPIErrorIncludesStatusAndDetailsButNoToken(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWithBaseURL(testToken, srv.URL, time.Second)
-	_, err := c.GetRecord(context.Background(), "zone-1", "home.example.com")
+	_, err := c.GetRecord(context.Background(), "zone-1", "home.example.com", RecordTypeAAAA)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err type = %T (%v), want *APIError", err, err)
@@ -177,7 +210,7 @@ func TestSuccessFalseWithHTTP200IsError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWithBaseURL(testToken, srv.URL, time.Second)
-	_, err := c.GetRecord(context.Background(), "zone-1", "home.example.com")
+	_, err := c.GetRecord(context.Background(), "zone-1", "home.example.com", RecordTypeAAAA)
 	if err == nil {
 		t.Fatal("want error for success=false response")
 	}
@@ -197,7 +230,7 @@ func TestContextCancellation(t *testing.T) {
 	c := NewClientWithBaseURL(testToken, srv.URL, 2*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := c.GetRecord(ctx, "zone-1", "home.example.com")
+	_, err := c.GetRecord(ctx, "zone-1", "home.example.com", RecordTypeAAAA)
 	if err == nil {
 		t.Fatal("want error on cancelled context")
 	}
@@ -214,7 +247,7 @@ func TestClientTimeout(t *testing.T) {
 
 	c := NewClientWithBaseURL(testToken, srv.URL, 20*time.Millisecond)
 	start := time.Now()
-	_, err := c.GetRecord(context.Background(), "zone-1", "home.example.com")
+	_, err := c.GetRecord(context.Background(), "zone-1", "home.example.com", RecordTypeAAAA)
 	if err == nil {
 		t.Fatal("want timeout error")
 	}

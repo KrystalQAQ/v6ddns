@@ -43,24 +43,37 @@ func (f *fakeDetector) Detect(ctx context.Context) ([]ipv6.Address, error) {
 type fakeCF struct {
 	record cloudflare.Record
 	found  bool
+
+	recordA cloudflare.Record
+	foundA  bool
+
 	getErr error
 	updErr error
 	creErr error
 
-	getCalls int
-	updCalls int
-	creCalls int
-	updated  string
-	created  string
-	gotTTL   int
-	gotProxy bool
-	gotID    string
+	getCalls    int
+	updCalls    int
+	creCalls    int
+	updated     string
+	created     string
+	createdType string
+	gotType     string
+	gotTTL      int
+	gotProxy    bool
+	gotID       string
 }
 
-func (f *fakeCF) GetRecord(ctx context.Context, zoneID, domain string) (cloudflare.Record, error) {
+func (f *fakeCF) GetRecord(ctx context.Context, zoneID, domain, recordType string) (cloudflare.Record, error) {
 	f.getCalls++
+	f.gotType = recordType
 	if f.getErr != nil {
 		return cloudflare.Record{}, f.getErr
+	}
+	if recordType == cloudflare.RecordTypeA {
+		if !f.foundA {
+			return cloudflare.Record{}, cloudflare.ErrRecordNotFound
+		}
+		return f.recordA, nil
 	}
 	if !f.found {
 		return cloudflare.Record{}, cloudflare.ErrRecordNotFound
@@ -77,9 +90,10 @@ func (f *fakeCF) UpdateRecord(ctx context.Context, zoneID, recordID, content str
 	return f.updErr
 }
 
-func (f *fakeCF) CreateRecord(ctx context.Context, zoneID, domain, content string, ttl int, proxied bool) error {
+func (f *fakeCF) CreateRecord(ctx context.Context, zoneID, domain, content, recordType string, ttl int, proxied bool) error {
 	f.creCalls++
 	f.created = content
+	f.createdType = recordType
 	f.gotTTL = ttl
 	f.gotProxy = proxied
 	return f.creErr
@@ -101,7 +115,7 @@ func newGateCF() *gateCF {
 	return &gateCF{records: map[string]cloudflare.Record{}}
 }
 
-func (f *gateCF) GetRecord(ctx context.Context, zoneID, domain string) (cloudflare.Record, error) {
+func (f *gateCF) GetRecord(ctx context.Context, zoneID, domain, recordType string) (cloudflare.Record, error) {
 	f.ops = append(f.ops, "get:"+domain)
 	if err, ok := f.getErrFor[domain]; ok {
 		return cloudflare.Record{}, err
@@ -110,8 +124,8 @@ func (f *gateCF) GetRecord(ctx context.Context, zoneID, domain string) (cloudfla
 		return cloudflare.Record{}, f.getErr
 	}
 	rec, ok := f.records[domain]
-	if !ok {
-		return cloudflare.Record{}, fmt.Errorf("get AAAA record for %s: %w", domain, cloudflare.ErrRecordNotFound)
+	if !ok || (rec.Type != "" && rec.Type != recordType) {
+		return cloudflare.Record{}, fmt.Errorf("get %s record for %s: %w", recordType, domain, cloudflare.ErrRecordNotFound)
 	}
 	return rec, nil
 }
@@ -132,14 +146,14 @@ func (f *gateCF) UpdateRecord(ctx context.Context, zoneID, recordID, content str
 	return fmt.Errorf("unknown record %s", recordID)
 }
 
-func (f *gateCF) CreateRecord(ctx context.Context, zoneID, domain, content string, ttl int, proxied bool) error {
+func (f *gateCF) CreateRecord(ctx context.Context, zoneID, domain, content, recordType string, ttl int, proxied bool) error {
 	f.ops = append(f.ops, "create:"+domain+"="+content)
 	if f.creErr != nil {
 		return f.creErr
 	}
 	f.nextID++
 	f.records[domain] = cloudflare.Record{
-		ID: fmt.Sprintf("id-%d", f.nextID), Type: "AAAA", Name: domain,
+		ID: fmt.Sprintf("id-%d", f.nextID), Type: recordType, Name: domain,
 		Content: content, TTL: ttl, Proxied: proxied,
 	}
 	return nil

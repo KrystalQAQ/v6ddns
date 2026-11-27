@@ -1,5 +1,5 @@
 // Package cloudflare wraps the subset of the Cloudflare v4 DNS API needed by
-// v6ddns: finding one AAAA record and creating or updating it.
+// v6ddns: finding one A or AAAA record and creating or updating it.
 //
 // It deliberately exposes no delete operation — the DDNS engine must never be
 // able to remove a user's DNS record, even after a failed update.
@@ -23,8 +23,10 @@ const (
 	DefaultBaseURL = "https://api.cloudflare.com/client/v4"
 	// DefaultTimeout bounds every request made by a Client.
 	DefaultTimeout = 5 * time.Second
-	// RecordTypeAAAA is the DNS record type managed by v6ddns.
+	// RecordTypeAAAA is the IPv6 DNS record type managed by v6ddns.
 	RecordTypeAAAA = "AAAA"
+	// RecordTypeA is the IPv4 DNS record type managed by v6ddns.
+	RecordTypeA = "A"
 
 	maxResponseBody = 1 << 20 // 1 MiB; enough for any single DNS record response.
 )
@@ -33,15 +35,15 @@ const (
 // here lets both the real Client and test doubles be injected without the
 // engine depending on HTTP details.
 type ClientAPI interface {
-	GetRecord(ctx context.Context, zoneID, domain string) (Record, error)
+	GetRecord(ctx context.Context, zoneID, domain, recordType string) (Record, error)
 	UpdateRecord(ctx context.Context, zoneID, recordID, content string, ttl int, proxied bool) error
-	CreateRecord(ctx context.Context, zoneID, domain, content string, ttl int, proxied bool) error
+	CreateRecord(ctx context.Context, zoneID, domain, content, recordType string, ttl int, proxied bool) error
 }
 
-// ErrRecordNotFound is returned by GetRecord when the zone has no AAAA record
-// matching the requested name. It is a sentinel so callers can distinguish
+// ErrRecordNotFound is returned by GetRecord when the zone has no record of
+// the requested type and name. It is a sentinel so callers can distinguish
 // "absent" from a real API failure with errors.Is.
-var ErrRecordNotFound = errors.New("cloudflare: AAAA record not found")
+var ErrRecordNotFound = errors.New("cloudflare: record not found")
 
 // ErrorDetail is one entry of Cloudflare's top-level "errors" array.
 type ErrorDetail struct {
@@ -137,12 +139,17 @@ type recordCreate struct {
 	Proxied bool   `json:"proxied"`
 }
 
-// GetRecord returns the first AAAA record whose name matches domain. When no
-// such record exists it returns ErrRecordNotFound (wrapped with the operation
-// context); any other failure is an *APIError or a transport error.
-func (c *Client) GetRecord(ctx context.Context, zoneID, domain string) (Record, error) {
+// GetRecord returns the first record of recordType whose name matches domain.
+// When no such record exists it returns ErrRecordNotFound (wrapped with the
+// operation context); any other failure is an *APIError or a transport error.
+// An empty recordType defaults to AAAA.
+func (c *Client) GetRecord(ctx context.Context, zoneID, domain, recordType string) (Record, error) {
+	recordType, err := normalizeRecordType(recordType)
+	if err != nil {
+		return Record{}, err
+	}
 	path := fmt.Sprintf("/zones/%s/dns_records?%s", url.PathEscape(zoneID), url.Values{
-		"type":     {RecordTypeAAAA},
+		"type":     {recordType},
 		"name":     {domain},
 		"per_page": {"1"},
 	}.Encode())
@@ -152,7 +159,7 @@ func (c *Client) GetRecord(ctx context.Context, zoneID, domain string) (Record, 
 		return Record{}, err
 	}
 	if len(out.Result) == 0 {
-		return Record{}, fmt.Errorf("get AAAA record for %s: %w", domain, ErrRecordNotFound)
+		return Record{}, fmt.Errorf("get %s record for %s: %w", recordType, domain, ErrRecordNotFound)
 	}
 	return out.Result[0], nil
 }
@@ -169,16 +176,36 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID, content str
 	}, &apiResponse[Record]{})
 }
 
-// CreateRecord adds a new AAAA record to the zone.
-func (c *Client) CreateRecord(ctx context.Context, zoneID, domain, content string, ttl int, proxied bool) error {
+// CreateRecord adds a new record of recordType to the zone. An empty
+// recordType defaults to AAAA.
+func (c *Client) CreateRecord(ctx context.Context, zoneID, domain, content, recordType string, ttl int, proxied bool) error {
+	recordType, err := normalizeRecordType(recordType)
+	if err != nil {
+		return err
+	}
 	path := fmt.Sprintf("/zones/%s/dns_records", url.PathEscape(zoneID))
 	return c.do(ctx, http.MethodPost, path, recordCreate{
-		Type:    RecordTypeAAAA,
+		Type:    recordType,
 		Name:    domain,
 		Content: content,
 		TTL:     ttl,
 		Proxied: proxied,
 	}, &apiResponse[Record]{})
+}
+
+// normalizeRecordType accepts only the two record families v6ddns manages.
+// Cloudflare would reject anything else anyway, but failing locally keeps the
+// error message free of a needless round trip.
+func normalizeRecordType(recordType string) (string, error) {
+	recordType = strings.ToUpper(strings.TrimSpace(recordType))
+	switch recordType {
+	case "":
+		return RecordTypeAAAA, nil
+	case RecordTypeAAAA, RecordTypeA:
+		return recordType, nil
+	default:
+		return "", fmt.Errorf("cloudflare: unsupported record type %q", recordType)
+	}
 }
 
 // do performs one authenticated request and decodes the standard envelope.

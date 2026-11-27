@@ -14,6 +14,7 @@ import (
 	"github.com/KrystalQAQ/v6ddns/internal/cloudflare"
 	"github.com/KrystalQAQ/v6ddns/internal/config"
 	"github.com/KrystalQAQ/v6ddns/internal/inbound"
+	"github.com/KrystalQAQ/v6ddns/internal/ipv4"
 	"github.com/KrystalQAQ/v6ddns/internal/ipv6"
 	"github.com/KrystalQAQ/v6ddns/internal/log"
 )
@@ -22,14 +23,21 @@ import (
 // real client's methods, so a mock can be injected in tests. A Compile-time
 // assertion against cloudflare.ClientAPI lives in TestCloudflareClientSatisfies.
 type CloudflareClient interface {
-	GetRecord(ctx context.Context, zoneID, domain string) (cloudflare.Record, error)
+	GetRecord(ctx context.Context, zoneID, domain, recordType string) (cloudflare.Record, error)
 	UpdateRecord(ctx context.Context, zoneID, recordID, content string, ttl int, proxied bool) error
-	CreateRecord(ctx context.Context, zoneID, domain, content string, ttl int, proxied bool) error
+	CreateRecord(ctx context.Context, zoneID, domain, content, recordType string, ttl int, proxied bool) error
+}
+
+// PublicIPv4Detector resolves this machine's public IPv4 address. The engine
+// depends on the interface so tests can inject a fixed address.
+type PublicIPv4Detector interface {
+	Detect(ctx context.Context) (net.IP, error)
 }
 
 // RecordResult describes one record's outcome inside a cycle.
 type RecordResult struct {
 	Domain  string `json:"domain"`
+	Type    string `json:"type"`
 	Source  string `json:"source"`
 	Updated bool   `json:"updated"`
 	OldIP   string `json:"old_ip"`
@@ -59,12 +67,13 @@ var _ Engine = (*engine)(nil)
 var _ CloudflareClient = (cloudflare.ClientAPI)(nil)
 
 type engine struct {
-	cfg       config.Config
-	detector  ipv6.Detector
-	cf        CloudflareClient
-	prober    inbound.Prober
-	neighbors ipv6.NeighborProvider
-	logger    *log.Logger
+	cfg          config.Config
+	detector     ipv6.Detector
+	ipv4Detector PublicIPv4Detector
+	cf           CloudflareClient
+	prober       inbound.Prober
+	neighbors    ipv6.NeighborProvider
+	logger       *log.Logger
 
 	// One detection serves every interface-backed record in a cycle.
 	detectDone bool
@@ -79,13 +88,18 @@ func NewEngine(cfg config.Config, detector ipv6.Detector, cf CloudflareClient, l
 		logger = log.Default
 	}
 	return &engine{
-		cfg:       cfg,
-		detector:  detector,
-		cf:        cf,
-		neighbors: ipv6.SystemNeighborProvider{},
-		logger:    logger,
+		cfg:          cfg,
+		detector:     detector,
+		ipv4Detector: ipv4.NewDetector(),
+		cf:           cf,
+		neighbors:    ipv6.SystemNeighborProvider{},
+		logger:       logger,
 	}
 }
+
+// SetPublicIPv4Detector overrides the public-IPv4 resolver. Tests inject a
+// fake; production keeps the HTTP detector built by NewEngine.
+func (e *engine) SetPublicIPv4Detector(d PublicIPv4Detector) { e.ipv4Detector = d }
 
 // SetNeighborProvider overrides the OS neighbour-table reader. Tests inject a
 // fake; production leaves the SystemNeighborProvider default in place.
@@ -149,7 +163,21 @@ func (e *engine) RunOnce(ctx context.Context) (Result, error) {
 		}
 	}
 
-	if len(specs) == 1 {
+	// The optional A record is independent of the IPv6 records: it follows
+	// the machine's public IPv4 address and inherits the top-level TTL and
+	// proxied flag.
+	if domain := e.cfg.IPv4DomainName(); domain != "" {
+		rr, err := e.runIPv4Record(ctx, domain)
+		result.Records = append(result.Records, rr)
+		if rr.Updated {
+			result.Updated = true
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", domain, err))
+		}
+	}
+
+	if len(result.Records) == 1 {
 		result.Message = result.Records[0].Message
 	} else {
 		result.Message = summarizeRecords(result.Records)
@@ -184,7 +212,7 @@ func summarizeRecords(records []RecordResult) string {
 // runRecord handles one resolved record. It returns a RecordResult even on
 // error so the caller can report which record failed.
 func (e *engine) runRecord(ctx context.Context, spec config.RecordSpec) (RecordResult, error) {
-	rr := RecordResult{Domain: spec.Domain, Source: string(spec.Source)}
+	rr := RecordResult{Domain: spec.Domain, Type: cloudflare.RecordTypeAAAA, Source: string(spec.Source)}
 	if err := ctx.Err(); err != nil {
 		return rr, err
 	}
@@ -201,7 +229,7 @@ func (e *engine) runRecord(ctx context.Context, spec config.RecordSpec) (RecordR
 	}
 	rr.NewIP = canonicalIP(target)
 
-	record, err := e.cf.GetRecord(ctx, e.cfg.ZoneID, spec.Domain)
+	record, err := e.cf.GetRecord(ctx, e.cfg.ZoneID, spec.Domain, cloudflare.RecordTypeAAAA)
 	if err != nil && !errors.Is(err, cloudflare.ErrRecordNotFound) {
 		rr.Error = err.Error()
 		return rr, fmt.Errorf("ddns: read current AAAA record: %w", err)
@@ -212,7 +240,7 @@ func (e *engine) runRecord(ctx context.Context, spec config.RecordSpec) (RecordR
 		rr.OldIP = canonicalIP(net.ParseIP(record.Content))
 		if rr.OldIP == rr.NewIP {
 			rr.Message = "IPv6 unchanged, skipped"
-			e.logger.Info(rr.Message, "ip", rr.NewIP, "domain", spec.Domain)
+			e.logger.Debug(rr.Message, "ip", rr.NewIP, "domain", spec.Domain)
 			return rr, nil
 		}
 	}
@@ -235,13 +263,80 @@ func (e *engine) runRecord(ctx context.Context, spec config.RecordSpec) (RecordR
 		return rr, nil
 	}
 
-	if err := e.cf.CreateRecord(ctx, e.cfg.ZoneID, spec.Domain, rr.NewIP, spec.TTL, spec.Proxied); err != nil {
+	if err := e.cf.CreateRecord(ctx, e.cfg.ZoneID, spec.Domain, rr.NewIP, cloudflare.RecordTypeAAAA, spec.TTL, spec.Proxied); err != nil {
 		rr.Error = err.Error()
 		return rr, fmt.Errorf("ddns: create AAAA record: %w", err)
 	}
 	rr.Updated = true
 	rr.Message = "AAAA record created"
 	e.logger.Info(rr.Message, "ip", rr.NewIP, "domain", spec.Domain, "manual", fromManual)
+	return rr, nil
+}
+
+// sourcePublicIPv4 labels the optional A record in results and the console.
+const sourcePublicIPv4 = "public-ipv4"
+
+// runIPv4Record maintains the optional A record for this machine's public
+// IPv4 address. It is not gated by require_inbound: the Worker probe verifies
+// AAAA candidates through a per-address AAAA probe record, which cannot
+// describe an IPv4 destination. A failed detection leaves the record untouched.
+func (e *engine) runIPv4Record(ctx context.Context, domain string) (RecordResult, error) {
+	rr := RecordResult{Domain: domain, Type: cloudflare.RecordTypeA, Source: sourcePublicIPv4}
+	if err := ctx.Err(); err != nil {
+		return rr, err
+	}
+	if e.ipv4Detector == nil {
+		return rr, errors.New("ddns: no public IPv4 detector configured")
+	}
+	ip, err := e.ipv4Detector.Detect(ctx)
+	if err != nil {
+		e.logger.Warn("public IPv4 detection failed; A record left unchanged", "domain", domain, "error", err)
+		return rr, nil
+	}
+	if ip == nil || ip.To4() == nil || !ipv4.Usable(ip) {
+		e.logger.Warn("public IPv4 is not usable; refusing to publish", "domain", domain, "ip", canonicalIP(ip))
+		return rr, nil
+	}
+	rr.NewIP = ip.String()
+
+	record, err := e.cf.GetRecord(ctx, e.cfg.ZoneID, domain, cloudflare.RecordTypeA)
+	if err != nil && !errors.Is(err, cloudflare.ErrRecordNotFound) {
+		rr.Error = err.Error()
+		return rr, fmt.Errorf("ddns: read current A record: %w", err)
+	}
+	found := err == nil
+
+	if found {
+		rr.OldIP = canonicalIP(net.ParseIP(record.Content))
+		if rr.OldIP == rr.NewIP {
+			rr.Message = "IPv4 unchanged, skipped"
+			e.logger.Debug(rr.Message, "ip", rr.NewIP, "domain", domain)
+			return rr, nil
+		}
+	}
+
+	ttl := e.cfg.TTL
+	if ttl == 0 {
+		ttl = 1
+	}
+	if found {
+		if err := e.cf.UpdateRecord(ctx, e.cfg.ZoneID, record.ID, rr.NewIP, ttl, e.cfg.Proxied); err != nil {
+			rr.Error = err.Error()
+			return rr, fmt.Errorf("ddns: update A record: %w", err)
+		}
+		rr.Updated = true
+		rr.Message = "A record updated"
+		e.logger.Info(rr.Message, "old", rr.OldIP, "new", rr.NewIP, "domain", domain)
+		return rr, nil
+	}
+
+	if err := e.cf.CreateRecord(ctx, e.cfg.ZoneID, domain, rr.NewIP, cloudflare.RecordTypeA, ttl, e.cfg.Proxied); err != nil {
+		rr.Error = err.Error()
+		return rr, fmt.Errorf("ddns: create A record: %w", err)
+	}
+	rr.Updated = true
+	rr.Message = "A record created"
+	e.logger.Info(rr.Message, "ip", rr.NewIP, "domain", domain)
 	return rr, nil
 }
 
@@ -299,7 +394,7 @@ func probeRecordName(base, ip string) string {
 // name is derived from ip, an existing record must already carry that content;
 // a mismatch is an error rather than something to silently overwrite.
 func (e *engine) ensureProbeRecord(ctx context.Context, host, ip string) error {
-	rec, err := e.cf.GetRecord(ctx, e.cfg.ZoneID, host)
+	rec, err := e.cf.GetRecord(ctx, e.cfg.ZoneID, host, cloudflare.RecordTypeAAAA)
 	switch {
 	case err == nil:
 		if canonicalIP(net.ParseIP(rec.Content)) != ip {
@@ -311,7 +406,7 @@ func (e *engine) ensureProbeRecord(ctx context.Context, host, ip string) error {
 		// Grey cloud is required for the Worker to reach the host directly.
 		return e.cf.UpdateRecord(ctx, e.cfg.ZoneID, rec.ID, ip, probeRecordTTL, false)
 	case errors.Is(err, cloudflare.ErrRecordNotFound):
-		return e.cf.CreateRecord(ctx, e.cfg.ZoneID, host, ip, probeRecordTTL, false)
+		return e.cf.CreateRecord(ctx, e.cfg.ZoneID, host, ip, cloudflare.RecordTypeAAAA, probeRecordTTL, false)
 	default:
 		return err
 	}
@@ -391,7 +486,7 @@ func (e *engine) pickNeighborTarget(ctx context.Context, spec config.RecordSpec)
 		e.logger.Warn("skipping unusable neighbour address", "address", n.IP.String(), "mac", spec.MAC, "domain", spec.Domain)
 		return nil, false, nil
 	}
-	e.logger.Info("neighbour address selected", "domain", spec.Domain, "mac", spec.MAC,
+	e.logger.Debug("neighbour address selected", "domain", spec.Domain, "mac", spec.MAC,
 		"ip", ip.String(), "interface", n.Interface, "state", n.State, "eui64", n.EUI64)
 	return ip, false, nil
 }

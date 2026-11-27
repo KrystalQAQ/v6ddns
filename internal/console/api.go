@@ -38,6 +38,7 @@ type configPayload struct {
 	APIToken       string                    `json:"api_token"`
 	ZoneID         string                    `json:"zone_id"`
 	Domain         string                    `json:"domain"`
+	IPv4Domain     string                    `json:"ipv4_domain,omitempty"`
 	Records        []config.AdditionalRecord `json:"records,omitempty"`
 	TTL            int                       `json:"ttl"`
 	Proxied        bool                      `json:"proxied"`
@@ -63,6 +64,7 @@ func payloadFrom(cfg config.Config, autostart bool, path string) configPayload {
 		APIToken:       cfg.APIToken,
 		ZoneID:         cfg.ZoneID,
 		Domain:         cfg.Domain,
+		IPv4Domain:     cfg.IPv4Domain,
 		Records:        cfg.Records,
 		TTL:            cfg.TTL,
 		Proxied:        cfg.Proxied,
@@ -89,6 +91,7 @@ func (p configPayload) toConfig() config.Config {
 	cfg.APIToken = strings.TrimSpace(p.APIToken)
 	cfg.ZoneID = strings.TrimSpace(p.ZoneID)
 	cfg.Domain = strings.TrimSpace(p.Domain)
+	cfg.IPv4Domain = strings.TrimSpace(p.IPv4Domain)
 	cfg.Records = p.Records
 	cfg.TTL = p.TTL
 	cfg.Proxied = p.Proxied

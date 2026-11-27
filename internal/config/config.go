@@ -92,6 +92,12 @@ type Config struct {
 	ZoneID   string `yaml:"zone_id"`
 	Domain   string `yaml:"domain"`
 
+	// IPv4Domain, when non-empty, makes the engine maintain an A record for
+	// this name containing the machine's public IPv4 address. It is independent
+	// of the IPv6 records above and inherits their TTL and Proxied values.
+	// Empty disables IPv4 handling.
+	IPv4Domain string `yaml:"ipv4_domain,omitempty"`
+
 	// Records are additional AAAA records maintained by the same daemon. The
 	// top-level Domain remains the primary record; this list lets one process
 	// publish the router's WAN address and several LAN devices by MAC.
@@ -284,6 +290,12 @@ func (c Config) RecordSpecs() []RecordSpec {
 	return out
 }
 
+// IPv4DomainName returns the normalized A-record name, or "" when IPv4
+// handling is disabled.
+func (c Config) IPv4DomainName() string {
+	return normalizeHost(c.IPv4Domain)
+}
+
 // ProbeBaseFor returns the base name used for the inbound gate's per-address
 // probe record. The primary record honours the explicit probe_base setting;
 // additional records use their own domain so the probe name always belongs to
@@ -458,6 +470,7 @@ func parse(data []byte) (Config, error) {
 	}
 	cfg.AdminBind = strings.TrimSpace(cfg.AdminBind)
 	cfg.AdminHosts = strings.TrimSpace(cfg.AdminHosts)
+	cfg.IPv4Domain = normalizeHost(cfg.IPv4Domain)
 	cfg.Policy = TargetPolicy(strings.ToLower(strings.TrimSpace(string(cfg.Policy))))
 	if cfg.InterfaceName != "" {
 		cfg.InterfaceName = strings.TrimSpace(cfg.InterfaceName)
@@ -496,6 +509,9 @@ func (c Config) Validate() error {
 	}
 	if net.ParseIP(strings.TrimSpace(c.Domain)) != nil {
 		return fmt.Errorf("config: domain must be a hostname, got %q", c.Domain)
+	}
+	if c.IPv4Domain != "" && !isHostname(normalizeHost(c.IPv4Domain)) {
+		return fmt.Errorf("config: ipv4_domain %q is not a valid hostname", c.IPv4Domain)
 	}
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("config: listen_port must be 1-65535, got %d", c.ListenPort)

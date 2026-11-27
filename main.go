@@ -9,6 +9,8 @@
 //	v6ddns --once          # detect and update once, then exit
 //	v6ddns --config PATH   # use a specific config file
 //	v6ddns --icmp          # additionally try privileged ICMPv6 probes
+//
+// Set V6DDNS_LOG_FILE to also append INFO-and-above lines to a rotating file.
 package main
 
 import (
@@ -250,7 +252,7 @@ func runDesktop(
 	startHidden bool,
 ) error {
 	buf := log.NewBuffer(500)
-	logger := log.New(io.MultiWriter(os.Stderr, buf), log.LevelInfo)
+	logger := newLogger(os.Stderr, buf)
 	if cfg.APIToken != "" {
 		logger.AddSecret(cfg.APIToken)
 	}
@@ -324,7 +326,7 @@ func runDaemonWithConsole(
 	workerURL string,
 ) error {
 	buf := log.NewBuffer(500)
-	logger := log.New(io.MultiWriter(os.Stdout, buf), log.LevelInfo)
+	logger := newLogger(os.Stdout, buf)
 	if cfg.APIToken != "" {
 		logger.AddSecret(cfg.APIToken)
 	}
@@ -406,6 +408,24 @@ func newStore(path string) *config.FileStore {
 
 func logToStdout() {
 	log.Default = log.New(os.Stdout, log.LevelInfo)
+}
+
+// newLogger wires the process logger: the supervisor's stdout/stderr, the
+// console's in-memory ring, and an optional persistent file selected by
+// V6DDNS_LOG_FILE. The level stays INFO; per-cycle "unchanged" lines are
+// logged at DEBUG, so the file records changes and anomalies rather than the
+// 5-minute heartbeat.
+func newLogger(base io.Writer, buf *log.Buffer) *log.Logger {
+	sinks := []io.Writer{base, buf}
+	if path := strings.TrimSpace(os.Getenv("V6DDNS_LOG_FILE")); path != "" {
+		f, err := log.NewFile(path, 5<<20)
+		if err != nil {
+			fmt.Fprintf(base, "open log file: %v\n", err)
+		} else {
+			sinks = append(sinks, f)
+		}
+	}
+	return log.New(io.MultiWriter(sinks...), log.LevelInfo)
 }
 
 // startGateListener opens the app's built-in status listener when the inbound

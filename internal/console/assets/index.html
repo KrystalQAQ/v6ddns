@@ -99,7 +99,7 @@
         <header class="page-head">
           <div>
             <h1>总览</h1>
-            <p>本机 IPv6 的发布状态与最近一次运行结果。</p>
+            <p>本机 IPv6 与公网 IPv4 的发布状态、最近一次运行结果。</p>
           </div>
           <div class="actions">
             <button type="button" class="btn" id="btn-overview-refresh">
@@ -145,7 +145,7 @@
           </dl>
         </section>
 
-        <div class="grid-3">
+        <div class="grid-4">
           <section class="card stat" aria-labelledby="stat-listen">
             <div class="stat-head">
               <svg class="icon" aria-hidden="true"><use href="#i-wifi"/></svg>
@@ -157,10 +157,18 @@
           <section class="card stat" aria-labelledby="stat-record">
             <div class="stat-head">
               <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
-              <h2 id="stat-record">Cloudflare 记录</h2>
+              <h2 id="stat-record">IPv6 记录</h2>
             </div>
-            <p class="stat-value" id="stat-record-value">—</p>
+            <p class="stat-value mono" id="stat-record-value">—</p>
             <p class="stat-note" id="stat-record-note">点击刷新读取线上值</p>
+          </section>
+          <section class="card stat" aria-labelledby="stat-ipv4">
+            <div class="stat-head">
+              <svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>
+              <h2 id="stat-ipv4">IPv4 记录</h2>
+            </div>
+            <p class="stat-value mono" id="stat-ipv4-value">未配置</p>
+            <p class="stat-note" id="stat-ipv4-note">在配置页填写 IPv4 域名后启用</p>
           </section>
           <section class="card stat" aria-labelledby="stat-inbound">
             <div class="stat-head">
@@ -303,7 +311,7 @@
         <header class="page-head">
           <div>
             <h1>DDNS</h1>
-            <p>对比 Cloudflare 线上记录与本机当前地址。</p>
+            <p>对比 Cloudflare 线上 AAAA 记录，以及每条托管记录的最近结果。</p>
           </div>
           <div class="actions">
             <button type="button" class="btn" id="btn-record-refresh">
@@ -320,7 +328,7 @@
             <div class="card-head">
               <div>
                 <h2 id="remote-title">Cloudflare 线上记录</h2>
-                <p>AAAA 记录</p>
+                <p>主域名的 AAAA 记录</p>
               </div>
               <span class="pill" id="remote-state"><span class="dot" aria-hidden="true"></span><span class="pill-text">未读取</span></span>
             </div>
@@ -360,18 +368,20 @@
           <div class="card-head">
             <div>
               <h2 id="records-title">托管记录</h2>
-              <p>最近一轮每个 AAAA 记录的结果</p>
+              <p>最近一轮 AAAA / A 记录的结果</p>
             </div>
           </div>
           <div class="table-wrapper" tabindex="0" role="region" aria-labelledby="records-title">
             <table class="data-table">
-              <caption class="visually-hidden">托管 AAAA 记录状态</caption>
+              <caption class="visually-hidden">托管 DNS 记录状态</caption>
               <thead>
                 <tr>
                   <th scope="col">域名</th>
+                  <th scope="col">类型</th>
                   <th scope="col">来源</th>
                   <th scope="col">地址</th>
                   <th scope="col">结果</th>
+                  <th scope="col">说明</th>
                 </tr>
               </thead>
               <tbody id="records-body"></tbody>
@@ -460,6 +470,12 @@
               <input type="text" id="cfg-domain" name="domain" autocomplete="off" spellcheck="false" required placeholder="host.example.com" aria-describedby="help-domain">
               <span class="help" id="help-domain">要更新 AAAA 记录的完整域名。</span>
               <span class="field-error" id="err-domain" role="alert"></span>
+            </div>
+            <div class="field">
+              <label for="cfg-ipv4-domain">IPv4 域名（可选）</label>
+              <input type="text" id="cfg-ipv4-domain" name="ipv4_domain" autocomplete="off" spellcheck="false" placeholder="v4.example.com" aria-describedby="help-ipv4-domain">
+              <span class="help" id="help-ipv4-domain">同时维护一条 A 记录，内容为本机公网 IPv4；留空表示不更新 IPv4。</span>
+              <span class="field-error" id="err-ipv4-domain" role="alert"></span>
             </div>
             <div class="grid-2 field-row">
               <div class="field">

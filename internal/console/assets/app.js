@@ -42,12 +42,16 @@
   const SOURCE_LABELS = {
     interface: "网卡",
     mac: "MAC",
+    "public-ipv4": "公网 IPv4",
   };
   const MESSAGES = {
     "no usable IPv6 address": "没有可用的 IPv6 地址",
     "IPv6 unchanged, skipped": "地址未变化，已跳过",
+    "IPv4 unchanged, skipped": "IPv4 未变化，已跳过",
     "AAAA record updated": "AAAA 记录已更新",
     "AAAA record created": "AAAA 记录已创建",
+    "A record updated": "A 记录已更新",
+    "A record created": "A 记录已创建",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -173,6 +177,13 @@
   function explainMessage(msg) {
     if (!msg) return "";
     if (MESSAGES[msg]) return MESSAGES[msg];
+    const unchanged = /^(\d+) records unchanged$/.exec(msg);
+    if (unchanged) return `${unchanged[1]} 条记录均未变化`;
+    const mixed = /^(\d+) records: (\d+) updated, (\d+) unchanged(?:, (\d+) failed)?$/.exec(msg);
+    if (mixed) {
+      const failed = mixed[4] ? `，${mixed[4]} 条失败` : "";
+      return `${mixed[1]} 条记录：${mixed[2]} 条已更新，${mixed[3]} 条未变化${failed}`;
+    }
     return msg;
   }
 
@@ -265,6 +276,16 @@
     setText("stat-listen-note", st.listener?.ok ? "用于公网入站检测" : st.listener?.error || "监听没有启动");
     setText("stat-record-value", published || "—");
     setText("stat-record-note", st.domain ? `${st.domain} · 可在 DDNS 页读取线上值` : "尚未配置域名");
+
+    const aRecord = (st.records || []).find((r) => r.type === "A" || r.source === "public-ipv4");
+    let ipv4Value = "等待首次更新";
+    if (!st.ipv4_domain) ipv4Value = "未配置";
+    else if (aRecord?.error) ipv4Value = "更新失败";
+    else if (aRecord) ipv4Value = aRecord.new_ip || aRecord.old_ip || "—";
+    setText("stat-ipv4-value", ipv4Value);
+    setText("stat-ipv4-note", st.ipv4_domain ? `${st.ipv4_domain} · A 记录` : "在配置页填写 IPv4 域名后启用");
+    const ipv4Note = $("stat-ipv4-note");
+    if (ipv4Note) ipv4Note.title = aRecord?.error || "";
 
     const inbound = st.last_inbound;
     if (inbound) {
@@ -463,7 +484,9 @@
     card.hidden = list.length === 0;
     const rows = list.map((r) => {
       const tr = document.createElement("tr");
+      const type = r.type || (r.source === "public-ipv4" ? "A" : "AAAA");
       codeCell(tr, r.domain);
+      addCell(tr, "类型", badge(type, type === "A" ? "type-a" : "type-aaaa"));
       addCell(tr, "来源", SOURCE_LABELS[r.source] || r.source || "—");
       addCell(tr, "地址", r.new_ip || r.old_ip || "—");
 
@@ -921,6 +944,7 @@
     set("cfg-token", cfg.api_token);
     set("cfg-zone", cfg.zone_id);
     set("cfg-domain", cfg.domain);
+    set("cfg-ipv4-domain", cfg.ipv4_domain);
     set("cfg-ttl", cfg.ttl);
     set("cfg-iface", cfg.interface_name);
     set("cfg-policy", cfg.policy || "stable-auto");
@@ -946,6 +970,7 @@
       api_token: value("cfg-token"),
       zone_id: value("cfg-zone"),
       domain: value("cfg-domain"),
+      ipv4_domain: value("cfg-ipv4-domain"),
       ttl: intValue("cfg-ttl"),
       proxied: checked("cfg-proxied"),
       interface_name: value("cfg-iface"),
@@ -1009,6 +1034,11 @@
           : DOMAIN_RE.test(v)
             ? ""
             : "域名格式不正确，例如 host.example.com",
+    },
+    {
+      id: "cfg-ipv4-domain",
+      err: "err-ipv4-domain",
+      test: (v) => (!v || DOMAIN_RE.test(v) ? "" : "域名格式不正确，例如 v4.example.com"),
     },
     {
       id: "cfg-ttl",
